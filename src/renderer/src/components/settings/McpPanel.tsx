@@ -42,6 +42,60 @@ function emptyForm(): McpForm {
   }
 }
 
+type McpExample = {
+  label: string
+  description: string
+  form: McpForm
+}
+
+const MCP_EXAMPLES: McpExample[] = [
+  {
+    label: 'Filesystem (stdio)',
+    description: 'Local @modelcontextprotocol/server-filesystem via npx.',
+    form: {
+      name: 'Filesystem',
+      transport: 'stdio',
+      command: 'npx',
+      args: '-y @modelcontextprotocol/server-filesystem C:\\allowed\\folder',
+      cwd: '',
+      url: '',
+      env: '',
+      headers: '',
+      enabled: true
+    }
+  },
+  {
+    label: 'GitHub (Streamable HTTP)',
+    description: 'GitHub remote server over Streamable HTTP.',
+    form: {
+      name: 'GitHub',
+      transport: 'http',
+      command: '',
+      args: '',
+      cwd: '',
+      url: 'https://api.githubcopilot.com/mcp/',
+      env: '',
+      headers: 'Authorization=Bearer YOUR_TOKEN',
+      enabled: true
+    }
+  },
+  {
+    label: 'Local server (SSE)',
+    description: 'Any local SSE endpoint, e.g. a self-hosted MCP.',
+    form: {
+      name: 'Local MCP',
+      transport: 'sse',
+      command: '',
+      args: '',
+      cwd: '',
+      url: 'http://127.0.0.1:3000/mcp',
+      env: '',
+      headers: '',
+      enabled: true
+    }
+  }
+]
+
 function parseLines(value: string, separator: '=' | ':'): Record<string, string> {
   const result: Record<string, string> = {}
   for (const line of value.split(/\r?\n/)) {
@@ -128,6 +182,13 @@ export function McpPanel({ project, onProjectChanged }: McpPanelProps) {
   function openAdd(): void {
     setEditingId(null)
     setForm(emptyForm())
+    setFormOpen(true)
+    setError('')
+  }
+
+  function applyExample(example: McpExample): void {
+    setEditingId(null)
+    setForm(example.form)
     setFormOpen(true)
     setError('')
   }
@@ -294,6 +355,21 @@ export function McpPanel({ project, onProjectChanged }: McpPanelProps) {
           <Icon name="plus" size={14} />
           Add MCP server
         </button>
+      </div>
+
+      <div className="mcp-examples">
+        <span className="mcp-examples-label">Examples</span>
+        {MCP_EXAMPLES.map((example) => (
+          <button
+            className="mcp-example-chip"
+            type="button"
+            key={example.label}
+            onClick={() => applyExample(example)}
+            title={example.description}
+          >
+            {example.label}
+          </button>
+        ))}
       </div>
 
       {error && <p className="form-notice error">{error}</p>}

@@ -401,11 +401,13 @@ export function ProviderCard({
         >
           <div className="form-grid">
             <label className="form-field">
-              <span>Display name</span>
+              <span>{provider.type === 'custom' ? 'Display name' : 'Display name (fixed)'}</span>
               <input
                 value={providerName}
                 maxLength={80}
                 onChange={(event) => setProviderName(event.target.value)}
+                disabled={provider.type !== 'custom'}
+                title={provider.type === 'custom' ? undefined : 'Upstream provider names are fixed.'}
               />
             </label>
             <label className="form-field">

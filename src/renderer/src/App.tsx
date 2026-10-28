@@ -95,6 +95,20 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!settings) {
+      return
+    }
+    const preferred = settings.theme
+    const resolved =
+      preferred === 'light' || preferred === 'dark'
+        ? preferred
+        : window.matchMedia('(prefers-color-scheme: light)').matches
+          ? 'light'
+          : 'dark'
+    document.documentElement.dataset.theme = resolved
+  }, [settings?.theme])
+
+  useEffect(() => {
     if (!window.agentdesk) {
       return
     }

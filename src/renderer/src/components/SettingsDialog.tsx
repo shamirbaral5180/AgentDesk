@@ -1,5 +1,11 @@
 ﻿import { useEffect, useState } from 'react'
-import type { AppInfo, AppSettings, AppUpdateInfo, ProjectInfo } from '@shared/types'
+import type {
+  AppInfo,
+  AppSettings,
+  AppUpdateInfo,
+  ProjectInfo,
+  ThemePreference
+} from '@shared/types'
 import { Brand } from './Brand'
 import { Icon } from './Icon'
 import { shortPath } from '../lib/format'
@@ -43,6 +49,7 @@ export function SettingsDialog({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [updateCheck, setUpdateCheck] = useState<AppUpdateInfo | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
+  const [theme, setTheme] = useState<ThemePreference>(settings.theme)
 
   useEffect(() => {
     if (!open) {
@@ -52,6 +59,10 @@ export function SettingsDialog({
     setBossName(settings.bossName)
     setSaveState('idle')
   }, [open])
+
+  useEffect(() => {
+    setTheme(settings.theme)
+  }, [settings.theme])
 
   useEffect(() => {
     if (!open) {
@@ -80,6 +91,18 @@ export function SettingsDialog({
     setSaveState('saving')
     const saved = await onSaveBossName(bossName.trim())
     setSaveState(saved ? 'saved' : 'error')
+  }
+
+  async function changeTheme(next: ThemePreference): Promise<void> {
+    setTheme(next)
+    try {
+      const result = await window.agentdesk.updateSettings({ theme: next })
+      if (result.ok) {
+        onSettingsChanged(result.data)
+      }
+    } catch {
+      setTheme(settings.theme)
+    }
   }
 
   async function checkUpdates(): Promise<void> {
@@ -300,9 +323,26 @@ export function SettingsDialog({
                 <div className="setting-row">
                   <div>
                     <strong>Appearance</strong>
-                    <span>Dark studio theme</span>
+                    <span>Choose a dark or light studio theme.</span>
                   </div>
-                  <span className="soft-chip">Dark</span>
+                  <div className="theme-toggle" role="group" aria-label="Theme">
+                    <button
+                      type="button"
+                      className={theme === 'dark' ? 'theme-toggle-option active' : 'theme-toggle-option'}
+                      onClick={() => void changeTheme('dark')}
+                    >
+                      <Icon name="moon" size={13} />
+                      Dark
+                    </button>
+                    <button
+                      type="button"
+                      className={theme === 'light' ? 'theme-toggle-option active' : 'theme-toggle-option'}
+                      onClick={() => void changeTheme('light')}
+                    >
+                      <Icon name="sun" size={13} />
+                      Light
+                    </button>
+                  </div>
                 </div>
                 <div className="setting-row">
                   <div>

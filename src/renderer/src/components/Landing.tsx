@@ -102,7 +102,7 @@ export function Landing({
           <div className="hero-copy">
             <span className="eyebrow">Your team is on standby</span>
             <h1>
-              You are the boss.
+              You lead.
               <span> The team does the work.</span>
             </h1>
             <p className="hero-lede">

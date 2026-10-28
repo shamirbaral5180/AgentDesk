@@ -45,7 +45,7 @@ const PROVIDER_DEFAULTS: Record<ProviderType, { name: string; baseUrl: string }>
 const PROVIDER_HINTS: Record<ProviderType, string> = {
   openai: 'Official OpenAI key. Models are discovered from the /v1/models endpoint.',
   google: 'Google AI Studio key for Gemini models.',
-  ollama: 'Local Ollama server. No API key is required.',
+  ollama: 'Local Ollama only. No API key is required. Cloud or hosted Ollama endpoints use Custom.',
   custom: 'Any OpenAI-compatible endpoint. Use the base URL that ends with /v1.'
 }
 
@@ -184,7 +184,7 @@ export function ProvidersPanel({
                           ? 'Ollama'
                           : 'Custom'}
                   </strong>
-                  <small>{type === 'custom' ? 'OpenAI-compatible' : type === 'google' ? 'Google AI' : type === 'ollama' ? 'Local' : 'Official'}</small>
+                  <small>{type === 'custom' ? 'OpenAI-compatible' : type === 'google' ? 'Google AI' : type === 'ollama' ? 'Local only' : 'Official'}</small>
                 </span>
               </button>
             ))}
@@ -194,13 +194,15 @@ export function ProvidersPanel({
 
           <div className="form-grid">
             <label className="form-field">
-              <span>Provider name</span>
+              <span>{form.type === 'custom' ? 'Provider name' : 'Provider name (fixed)'}</span>
               <input
                 value={form.name}
                 maxLength={80}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
                 placeholder="My provider"
                 required
+                disabled={form.type !== 'custom'}
+                title={form.type === 'custom' ? undefined : 'Upstream provider names are fixed.'}
               />
             </label>
             <label className="form-field">

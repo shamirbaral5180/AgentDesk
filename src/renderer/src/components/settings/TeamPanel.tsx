@@ -305,7 +305,11 @@ export function TeamPanel({
             <Icon name="users" size={23} />
           </span>
           <h3>No project is open</h3>
-          <p>Open a project folder before editing the team roster.</p>
+          <p>
+            The team lives inside each project. When you open a folder, AgentDesk creates a
+            default six-agent roster automatically and gives every agent a predefined role and
+            system prompt. Open a project to view or edit the team.
+          </p>
         </div>
       </div>
     )

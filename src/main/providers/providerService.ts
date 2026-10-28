@@ -105,7 +105,7 @@ export function createProvider(draft: ProviderDraft): ProviderMutationResult {
   const provider: ProviderConfig = {
     id: `prov_${randomUUID()}`,
     type,
-    name: providerName(draft.name, type),
+    name: type === 'custom' ? providerName(draft.name, type) : DEFAULT_NAMES[type],
     baseUrl,
     enabled: draft.enabled ?? true,
     hasKey: false,
@@ -139,7 +139,12 @@ export function updateProvider(patch: ProviderPatch): ProviderMutationResult {
   const existing = findProvider(current, patch.id)
   const next: ProviderConfig = {
     ...existing,
-    name: patch.name === undefined ? existing.name : providerName(patch.name, existing.type),
+    name:
+      existing.type !== 'custom'
+        ? existing.name
+        : patch.name === undefined
+          ? existing.name
+          : providerName(patch.name, existing.type),
     baseUrl:
       patch.baseUrl === undefined
         ? existing.baseUrl
