@@ -1,0 +1,13 @@
+node_modules/
+out/
+dist/
+.dev-data/
+.agentdesk/
+data/
+*.log
+*.zip
+.env
+.env.*
+secrets.bin
+.DS_Store
+Thumbs.db
