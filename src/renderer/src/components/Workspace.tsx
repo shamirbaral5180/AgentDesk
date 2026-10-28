@@ -151,7 +151,7 @@ export function Workspace({
               ))}
             </div>
             <p className="sidebar-hint">
-              Click an agent for a conversation, or use Plan room for a team meeting.
+              Open Chat to talk to the whole team, or use Plan room for a structured meeting.
             </p>
           </section>
         </div>
@@ -240,7 +240,7 @@ export function Workspace({
 
         {view === 'chat' ? (
           <AgentChat
-            key={`${project.id}:${selectedAgent.id}`}
+            key={project.id}
             project={project}
             settings={settings}
             agent={selectedAgent}

@@ -91,23 +91,25 @@ export function AgentChat({
   const [inlineError, setInlineError] = useState('')
   const [runId, setRunId] = useState<string | null>(null)
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null)
+  const [responderId, setResponderId] = useState(agent.id)
 
+  const responder = agents.find((entry) => entry.id === responderId) ?? agent
   const activeRunRef = useRef<string | null>(null)
   const streamingMessageIdRef = useRef<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
-  const modelRecord = agent.model
+  const modelRecord = responder.model
     ? settings.models.find(
         (entry) =>
-          entry.providerId === agent.model?.providerConfigId &&
-          entry.modelId === agent.model?.modelId
+          entry.providerId === responder.model?.providerConfigId &&
+          entry.modelId === responder.model?.modelId
       ) ?? null
     : null
   const provider = modelRecord
     ? settings.providers.find((entry) => entry.id === modelRecord.providerId) ?? null
     : null
-  const modelReady = Boolean(agent.model && modelRecord && provider)
+  const modelReady = Boolean(responder.model && modelRecord && provider)
   const supportsTools = modelRecord?.supportsTools ?? false
   const supportsVision = modelRecord?.supportsVision ?? false
   const imageWarning = pendingImages.length > 0 && !supportsVision
@@ -116,7 +118,6 @@ export function AgentChat({
     (provider?.type === 'openai' || provider?.type === 'google') &&
     !provider?.hasKey
   const providerDisabled = Boolean(provider && !provider.enabled)
-  const modelLabel = modelRecord?.displayName ?? agent.modelLabel ?? 'No model assigned'
 
   useEffect(() => {
     let cancelled = false
@@ -134,7 +135,7 @@ export function AgentChat({
     setSending(false)
 
     window.agentdesk
-      .listChatSessions(agent.id)
+      .listChatSessions()
       .then(async (result) => {
         if (cancelled) {
           return
@@ -174,7 +175,11 @@ export function AgentChat({
     return () => {
       cancelled = true
     }
-  }, [project.id, agent.id])
+  }, [project.id])
+
+  useEffect(() => {
+    setResponderId(agent.id)
+  }, [agent.id])
 
   useEffect(() => {
     if (active) {
@@ -188,7 +193,7 @@ export function AgentChat({
         return
       }
       if (event.type === 'start') {
-        if (event.agentId !== agent.id) {
+        if (!agents.some((entry) => entry.id === event.agentId)) {
           return
         }
         activeRunRef.current = event.runId
@@ -383,7 +388,7 @@ export function AgentChat({
     }
     setInlineError('')
     try {
-      const result = await window.agentdesk.createChatSession(agent.id, mode)
+      const result = await window.agentdesk.createChatSession(responder.id, mode)
       if (!result.ok) {
         setInlineError(result.error.message)
         return
@@ -463,7 +468,22 @@ export function AgentChat({
     if (sending || !modelReady) {
       return
     }
-    const text = override ? override.text : draft.trim()
+    let text = override ? override.text : draft.trim()
+    let targetMode: ChatMode = mode
+    if (!override) {
+      const command = /^\/(plan|build)\b\s*/i.exec(text)
+      if (command) {
+        targetMode = command[1].toLowerCase() as ChatMode
+        text = text.slice(command[0].length).trim()
+        if (targetMode !== mode) {
+          await switchMode(targetMode)
+        }
+        if (!text && pendingImages.length === 0) {
+          setDraft('')
+          return
+        }
+      }
+    }
     if (!text && !override && pendingImages.length === 0) {
       return
     }
@@ -472,10 +492,10 @@ export function AgentChat({
     try {
       const result = await window.agentdesk.sendChatMessage({
         sessionId: active?.session.id ?? null,
-        agentId: agent.id,
+        agentId: responder.id,
         text,
         attachmentIds: override ? [] : pendingImages.map((image) => image.id),
-        mode
+        mode: targetMode
       })
       if (!result.ok) {
         setSending(false)
@@ -525,39 +545,16 @@ export function AgentChat({
     <div className="agent-chat">
       <header className="chat-header">
         <div className="chat-agent-block">
-          <span className="chat-agent-avatar" style={{ backgroundColor: agent.color }}>
-            {agent.name
-              .split(' ')
-              .filter((part) => part !== '&')
-              .slice(0, 2)
-              .map((part) => part[0])
-              .join('')}
+          <span className="chat-agent-avatar chat-team-avatar">
+            <Icon name="users" size={17} />
           </span>
           <div className="chat-agent-copy">
             <div className="chat-agent-title-row">
-              <select
-                className="chat-agent-select"
-                value={agent.id}
-                onChange={(event) => onSelectAgent(event.target.value)}
-                disabled={sending}
-                aria-label="Select agent"
-              >
-                {agents.map((entry) => (
-                  <option key={entry.id} value={entry.id}>
-                    {entry.name}
-                  </option>
-                ))}
-              </select>
-              <span className={mode === 'build' ? 'plan-pill build' : 'plan-pill'}>
-                {mode === 'build' ? 'Build' : 'Plan'}
-              </span>
-              <span className="readonly-pill">
-                <Icon name={mode === 'build' ? 'shield' : 'lock'} size={11} />
-                {mode === 'build' ? 'Approval-aware' : 'Read-only'}
-              </span>
+              <strong className="chat-team-title">Team room</strong>
+              <span className="soft-chip">{agents.length} agents</span>
             </div>
             <span className="chat-agent-meta">
-              {modelLabel}
+              Everyone sees this conversation. Only the selected agent replies.
               {active ? ` - ${formatRelativeTime(active.session.updatedAt)}` : ''}
             </span>
           </div>
@@ -625,9 +622,9 @@ export function AgentChat({
           </div>
         ) : isEmpty ? (
           <div className="chat-empty">
-            <div className="chat-empty-mark" style={{ borderColor: agent.color }}>
-              <span style={{ backgroundColor: agent.color }}>
-                {agent.name
+            <div className="chat-empty-mark" style={{ borderColor: responder.color }}>
+              <span style={{ backgroundColor: responder.color }}>
+                {responder.name
                   .split(' ')
                   .filter((part) => part !== '&')
                   .slice(0, 2)
@@ -638,15 +635,10 @@ export function AgentChat({
             <span className="eyebrow">
               {mode === 'build' ? 'Build mode - approval-aware' : 'Plan mode - read-only'}
             </span>
-            <h2>
-              {mode === 'build'
-                ? `Tell ${agent.name.split(' ')[0]} what to build.`
-                : `Ask ${agent.name.split(' ')[0]} about this project.`}
-            </h2>
+            <h2>Talk to the team.</h2>
             <p>
-              {mode === 'build'
-                ? 'This agent can read, edit, move, and delete files and run commands. File changes are snapshotted, and risky actions pause for your approval.'
-                : 'This agent can list files, read source, and search the repository. It cannot write files or run commands in Plan mode.'}
+              Everyone sees this room. Pick who answers below the composer, or type
+              {' '}<code>/plan</code> or <code>/build</code> to switch modes from the prompt.
             </p>
             <div className="chat-suggestions">
               {(mode === 'build'
@@ -695,7 +687,11 @@ export function AgentChat({
               <ChatMessageView
                 key={message.id}
                 message={message}
-                agent={agent}
+                agent={
+                  message.role === 'assistant'
+                    ? agents.find((entry) => entry.name === message.senderName) ?? responder
+                    : responder
+                }
                 streaming={sending && streamingMessageId === message.id}
                 onOpenContext={setContextMessage}
                 onRetry={
@@ -784,9 +780,7 @@ export function AgentChat({
             }}
             placeholder={
               modelReady
-                ? mode === 'build'
-                  ? `Tell ${agent.name.split(' ')[0]} what to build or change...`
-                  : `Ask ${agent.name.split(' ')[0]} about the codebase...`
+                ? `Message the team. ${responder.name.split(' ')[0]} will answer. Type /plan or /build to switch mode.`
                 : 'Assign a model in Settings, Team to unlock the composer.'
             }
             rows={1}
@@ -805,6 +799,24 @@ export function AgentChat({
               >
                 <Icon name="paperclip" size={16} />
               </button>
+              <label className="composer-responder">
+                <span>Reply</span>
+                <select
+                  value={responder.id}
+                  onChange={(event) => {
+                    setResponderId(event.target.value)
+                    onSelectAgent(event.target.value)
+                  }}
+                  disabled={sending || agents.length === 0}
+                  aria-label="Choose the agent that replies"
+                >
+                  {agents.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 className={mode === 'plan' ? 'composer-mode active' : 'composer-mode'}
                 type="button"

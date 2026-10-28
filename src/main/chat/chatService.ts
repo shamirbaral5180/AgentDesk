@@ -757,12 +757,8 @@ export function startChatRun(
   let session = request.sessionId
     ? getChatSessionSummary(request.sessionId)
     : createChatSession(agent.id, request.mode ?? 'plan').session
-  if (session.agentId !== agent.id) {
-    throw new AppError(
-      'CHAT_SESSION_AGENT_MISMATCH',
-      'That conversation belongs to a different agent.'
-    )
-  }
+  // A team room is one shared transcript. The selected agent answers the
+  // current message, while every agent sees the same conversation history.
   const mode = request.mode ?? session.mode
   if (session.mode !== mode) {
     setChatSessionMode(session.id, mode)

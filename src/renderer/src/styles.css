@@ -7454,3 +7454,34 @@ textarea:focus-visible {
   border-color: var(--accent-line);
   color: var(--text);
 }
+
+.chat-team-avatar {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+}
+
+.chat-team-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.composer-responder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.composer-responder select {
+  max-width: 150px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 8.5px;
+}
