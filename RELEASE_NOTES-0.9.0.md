@@ -30,8 +30,16 @@ Final hardening and portable release.
 ## Artifact
 
 - File: `AgentDesk-0.9.0-x64.zip`
-- Size: 157,846,329 bytes
-- SHA-256: `C04DDC538D2F20A397469818DC5DD40A60C681E9CC6ECCE4FD543C2429B98D68`
+- Size: 157,848,276 bytes
+- SHA-256: `9A5FB5987BEA52CC21F6FDD6B785C14078664060F01B30E060D2A570FFB81BE3`
+
+## Review refinements
+
+- Blue accent theme with a working Dark / Light appearance selector.
+- Landing hero reads "You lead. The team does the work."
+- Ollama is local-only; cloud endpoints use Custom. Non-custom provider names are fixed.
+- Team empty state explains per-project initialization and default system prompts.
+- MCP settings include stdio, Streamable HTTP, and SSE example presets.
 
 ## Upgrade notes
 
