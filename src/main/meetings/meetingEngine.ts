@@ -13,6 +13,7 @@ import {
   type ChatUsage,
   type MeetingEvent,
   type MeetingIntakeCard,
+  type MeetingCheckpoint,
   type MeetingMessage,
   type MeetingMessageMetadata,
   type MeetingParticipant,
@@ -40,12 +41,20 @@ import { createAgentTools, type AgentToolBundle } from '../chat/projectTools'
 import { buildMcpToolBundle, mergeToolBundles } from '../mcp/mcpAgentTools'
 import { retrieveMemoryContext } from '../memory/memoryService'
 import {
+  createRunLease,
+  finishRunLease,
+  heartbeatRunLease,
+  meetingCheckpoint,
+  resumableLease
+} from '../recovery/runLeaseService'
+import {
   appendMeetingMessage,
   beginMeetingMessage,
   coordinatorAgent,
   getMeetingDetail,
   markMeetingDeliveriesProcessed,
   meetingParticipants,
+  meetingPlan,
   meetingSessionId,
   meetingSummary,
   persistPlan,
@@ -89,6 +98,31 @@ type MeetingContext = {
   lastText: string
   emptyTurns: number
   stopSignalReason: () => 'user' | 'paused'
+  leaseId: string
+  checkpoint: MeetingCheckpoint
+}
+
+function defaultCheckpoint(): MeetingCheckpoint {
+  return {
+    phase: 'intake',
+    round: 0,
+    completedIntakeAgentIds: [],
+    completedDiscussionAgentIds: [],
+    planningStarted: false,
+    planProduced: false,
+    taskIndex: 0,
+    currentTaskId: null,
+    reviewCycle: 0,
+    completedTaskIds: [],
+    reviewResults: [],
+    reportStarted: false,
+    updatedAt: Date.now()
+  }
+}
+
+function saveCheckpoint(context: MeetingContext): void {
+  context.checkpoint = { ...context.checkpoint, updatedAt: Date.now() }
+  heartbeatRunLease(context.leaseId, context.checkpoint)
 }
 
 function emit(sender: WebContents, event: MeetingEvent): void {
@@ -831,6 +865,7 @@ function stopResult(
     stopReason: reason,
     ended: true
   })
+  finishRunLease(context.leaseId, 'stopped')
   const detail = getMeetingDetail(context.meetingId)
   emit(context.sender, {
     type: 'cancelled',
@@ -846,6 +881,7 @@ function finishResult(context: MeetingContext): void {
     stopReason: 'completed',
     ended: true
   })
+  finishRunLease(context.leaseId, 'completed')
   const detail = getMeetingDetail(context.meetingId)
   emit(context.sender, {
     type: 'done',
@@ -863,6 +899,7 @@ function failMeeting(context: MeetingContext, error: unknown): void {
     error: message,
     ended: true
   })
+  finishRunLease(context.leaseId, 'stopped')
   const detail = getMeetingDetail(context.meetingId)
   emit(context.sender, {
     type: 'error',
@@ -888,12 +925,29 @@ function checkTurnProgress(context: MeetingContext, turn: TurnResult): void {
   context.lastText = normalized
 }
 
+function cardsFromMessages(meetingId: string): Map<string, MeetingIntakeCard> {
+  const cards = new Map<string, MeetingIntakeCard>()
+  const messages = getMeetingDetail(meetingId).messages
+  for (const message of messages) {
+    if (
+      message.senderAgentId &&
+      message.metadata?.phase === 'intake' &&
+      message.metadata.card
+    ) {
+      cards.set(message.senderAgentId, message.metadata.card)
+    }
+  }
+  return cards
+}
+
 async function runMeeting(context: MeetingContext): Promise<void> {
   const meeting = meetingSummary(context.meetingId)
   const participants = meeting.participants
   const agents = meetingParticipants(context.meetingId)
   const coordinator = coordinatorAgent(context.meetingId)
-  const intakeCards = new Map<string, MeetingIntakeCard>()
+  const intakeCards = cardsFromMessages(context.meetingId)
+  const completedIntake = new Set(context.checkpoint.completedIntakeAgentIds)
+  const completedDiscussion = new Set(context.checkpoint.completedDiscussionAgentIds)
 
   try {
     setMeetingStatus({
@@ -909,6 +963,9 @@ async function runMeeting(context: MeetingContext): Promise<void> {
 
     setMeetingRound(context.meetingId, 1)
     for (const agent of agents) {
+      if (completedIntake.has(agent.id)) {
+        continue
+      }
       if (context.controller.signal.aborted) {
         stopResult(context, context.stopSignalReason())
         return
@@ -930,6 +987,12 @@ async function runMeeting(context: MeetingContext): Promise<void> {
       }
       const card = intakeCardFromText(turn.text)
       intakeCards.set(agent.id, card)
+      context.checkpoint.phase = 'intake'
+      context.checkpoint.round = 1
+      context.checkpoint.completedIntakeAgentIds = [
+        ...new Set([...context.checkpoint.completedIntakeAgentIds, agent.id])
+      ]
+      saveCheckpoint(context)
       updateMeetingMessage({
         messageId: turn.message.id,
         content: turn.text,
@@ -958,7 +1021,13 @@ async function runMeeting(context: MeetingContext): Promise<void> {
       coordinator,
       ...agents.filter((agent) => agent.id !== coordinator.id)
     ]
+    context.checkpoint.phase = 'discussion'
+    context.checkpoint.round = 2
+    saveCheckpoint(context)
     for (const agent of discussionOrder) {
+      if (completedDiscussion.has(agent.id)) {
+        continue
+      }
       if (context.controller.signal.aborted) {
         stopResult(context, context.stopSignalReason())
         return
@@ -980,6 +1049,10 @@ async function runMeeting(context: MeetingContext): Promise<void> {
         stopResult(context, context.stopSignalReason())
         return
       }
+      context.checkpoint.completedDiscussionAgentIds = [
+        ...new Set([...context.checkpoint.completedDiscussionAgentIds, agent.id])
+      ]
+      saveCheckpoint(context)
       const budgetReason = budgetStopReason(context, 2)
       if (budgetReason) {
         stopResult(context, budgetReason)
@@ -990,6 +1063,17 @@ async function runMeeting(context: MeetingContext): Promise<void> {
 
     setMeetingStatus({ meetingId: context.meetingId, status: 'planning' })
     setMeetingRound(context.meetingId, 3)
+    context.checkpoint.phase = 'planning'
+    context.checkpoint.round = 3
+    context.checkpoint.planningStarted = true
+    saveCheckpoint(context)
+    if (context.checkpoint.planProduced || meetingPlan(context.meetingId)) {
+      context.checkpoint.phase = 'done'
+      context.checkpoint.planProduced = true
+      saveCheckpoint(context)
+      finishResult(context)
+      return
+    }
     const planningTurn = await runTurn({
       context,
       agent: coordinator,
@@ -1036,6 +1120,9 @@ async function runMeeting(context: MeetingContext): Promise<void> {
       plan,
       taskIdsByTitle: new Map()
     })
+    context.checkpoint.phase = 'done'
+    context.checkpoint.planProduced = true
+    saveCheckpoint(context)
     const updated = setMeetingPlan(context.meetingId, plan)
     emit(context.sender, {
       type: 'plan',
@@ -1080,14 +1167,38 @@ function stopReasonForActive(active: ActiveMeeting): 'user' | 'paused' {
   return active.stopReason ?? 'user'
 }
 
-export function startMeetingEngine(sender: WebContents, meetingId: string): MeetingSummary {
+export function startMeetingEngine(
+  sender: WebContents,
+  meetingId: string,
+  options: { resume?: boolean } = {}
+): MeetingSummary {
   if (activeMeetings.has(meetingId)) {
     throw new AppError('MEETING_ACTIVE', 'This meeting is already running.')
   }
   const meeting = meetingSummary(meetingId)
-  if (meeting.status !== 'draft' && meeting.status !== 'failed' && meeting.status !== 'stopped') {
+  const interruptedStatus = ['intake', 'discussion', 'planning'].includes(meeting.status)
+  if (
+    !options.resume &&
+    meeting.status !== 'draft' &&
+    meeting.status !== 'failed' &&
+    meeting.status !== 'stopped'
+  ) {
     throw new AppError('MEETING_NOT_READY', 'This meeting has already run.')
   }
+  if (options.resume && !interruptedStatus && meeting.status !== 'stopped' && meeting.status !== 'failed') {
+    throw new AppError('MEETING_NOT_INTERRUPTED', 'This meeting has nothing to resume.')
+  }
+  const lease = resumableLease(meetingId)
+  const checkpoint =
+    options.resume
+      ? lease?.checkpoint ?? meetingCheckpoint(meetingId) ?? defaultCheckpoint()
+      : defaultCheckpoint()
+  const leaseId = lease?.id ?? createRunLease({
+    kind: 'plan',
+    sessionId: meetingSessionId(meetingId),
+    meetingId,
+    checkpoint
+  })
   const controller = new AbortController()
   const active: ActiveMeeting = {
     controller,
@@ -1106,7 +1217,9 @@ export function startMeetingEngine(sender: WebContents, meetingId: string): Meet
     usage: meeting.usage,
     lastText: '',
     emptyTurns: 0,
-    stopSignalReason: () => (active.stopReason ? stopReasonForActive(active) : 'user')
+    stopSignalReason: () => (active.stopReason ? stopReasonForActive(active) : 'user'),
+    leaseId,
+    checkpoint
   }
   void runMeeting(context)
   return meetingSummary(meetingId)
@@ -1176,6 +1289,12 @@ export function sendDirectEngine(
     stopReason: null
   }
   activeMeetings.set(input.meetingId, active)
+  const directLeaseId = createRunLease({
+    kind: 'plan',
+    sessionId: meetingSessionId(input.meetingId),
+    meetingId: input.meetingId,
+    checkpoint: defaultCheckpoint()
+  })
   const context: MeetingContext = {
     meetingId: input.meetingId,
     sessionId: meetingSessionId(input.meetingId),
@@ -1187,7 +1306,9 @@ export function sendDirectEngine(
     usage: meeting.usage,
     lastText: '',
     emptyTurns: 0,
-    stopSignalReason: () => (active.stopReason ? stopReasonForActive(active) : 'user')
+    stopSignalReason: () => (active.stopReason ? stopReasonForActive(active) : 'user'),
+    leaseId: directLeaseId,
+    checkpoint: defaultCheckpoint()
   }
 
   void (async () => {
@@ -1236,6 +1357,7 @@ export function sendDirectEngine(
         failMeeting(context, error)
       }
     } finally {
+      finishRunLease(directLeaseId, 'completed')
       activeMeetings.delete(input.meetingId)
     }
   })()

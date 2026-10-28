@@ -57,6 +57,7 @@ import {
   mergeToolBundles
 } from '../mcp/mcpAgentTools'
 import { recordTurnMemories, retrieveMemoryContext } from '../memory/memoryService'
+import { assertMonthlyBudgetAvailable } from '../data/dataService'
 import {
   appendChatMessage,
   createChatSession,
@@ -65,6 +66,7 @@ import {
   getChatMessage,
   getChatMessages,
   getChatSessionSummary,
+  markChatMessageInterrupted,
   recordToolCall,
   recordUsage,
   setChatSessionMode,
@@ -658,6 +660,7 @@ async function executeRun(input: {
       const metadata: ChatMessageMetadata = {
         status: 'error',
         error: message,
+        retryable: true,
         context: { ...context, usage, durationMs },
         toolCalls: toolTraces,
         usage,
@@ -742,6 +745,7 @@ export function startChatRun(
   if (!project) {
     throw new AppError('NO_PROJECT', 'Open a project before chatting.')
   }
+  assertMonthlyBudgetAvailable()
   const team = getCurrentTeamConfig()
   if (!team) {
     throw new AppError('NO_TEAM', 'The project team configuration could not be loaded.')
@@ -1009,6 +1013,11 @@ export function cancelChatRun(runId: string): void {
 export function cancelAllChatRuns(): void {
   cancelAllApprovals('The app is closing or the project is changing.')
   for (const active of activeRuns.values()) {
+    try {
+      markChatMessageInterrupted(active.assistantMessageId)
+    } catch {
+      // The project database may already be closed during shutdown.
+    }
     active.controller.abort()
   }
   activeRuns.clear()

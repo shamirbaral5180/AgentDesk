@@ -80,6 +80,7 @@ export type AgentToolRuntime = {
     risk: ApprovalRisk
     reason: string
     payload: Record<string, unknown>
+    neverGrant?: boolean
   }) => Promise<{
     decision: 'approved' | 'denied'
     scope?: ApprovalScope

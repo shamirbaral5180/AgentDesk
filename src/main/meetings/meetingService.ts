@@ -10,14 +10,19 @@ import type {
 import { loadSettings } from '../config/settings'
 import { AppError } from '../errors'
 import { getCurrentTeamConfig } from '../project/projectService'
+import { assertMonthlyBudgetAvailable } from '../data/dataService'
 import {
   approveMeetingPlanRecord,
   createBuildMeetingRecord,
   createMeetingRecord,
   getMeetingDetail,
   listMeetingSummaries,
-  meetingSummary
+  meetingSummary,
+  releaseAllActiveClaims,
+  setMeetingStatus
 } from './meetingStore'
+import { cancelApprovalsForSession } from '../approvals/approvalService'
+import { markMeetingLeaseStopped } from '../recovery/runLeaseService'
 import {
   cancelAllMeetingRuns,
   sendDirectEngine,
@@ -84,6 +89,7 @@ export function getMeeting(meetingId: string): MeetingDetail {
 }
 
 export function createMeeting(request: MeetingCreateRequest): MeetingDetail {
+  assertMonthlyBudgetAvailable()
   const team = getCurrentTeamConfig()
   if (!team) {
     throw new AppError('NO_TEAM', 'The project team configuration could not be loaded.')
@@ -116,6 +122,7 @@ export function createBuildMeeting(request: MeetingBuildCreateRequest): MeetingD
 }
 
 export function startMeeting(sender: WebContents, meetingId: string): MeetingSummary {
+  assertMonthlyBudgetAvailable()
   const detail = getMeetingDetail(meetingId)
   if (detail.meeting.mode === 'build') {
     return startBuildEngine(sender, meetingId)
@@ -128,6 +135,29 @@ export function startMeeting(sender: WebContents, meetingId: string): MeetingSum
     throw new AppError('MEETING_NOT_READY', 'This meeting has already run.')
   }
   return startMeetingEngine(sender, meetingId)
+}
+
+export function resumeMeeting(sender: WebContents, meetingId: string): MeetingSummary {
+  assertMonthlyBudgetAvailable()
+  const detail = getMeetingDetail(meetingId)
+  if (detail.meeting.mode === 'build') {
+    return startBuildEngine(sender, meetingId, { resume: true })
+  }
+  return startMeetingEngine(sender, meetingId, { resume: true })
+}
+
+export function markMeetingStopped(meetingId: string): MeetingSummary {
+  const detail = getMeetingDetail(meetingId)
+  releaseAllActiveClaims(meetingId)
+  cancelApprovalsForSession(detail.meeting.sessionId)
+  markMeetingLeaseStopped(meetingId)
+  return setMeetingStatus({
+    meetingId,
+    status: 'stopped',
+    stopReason: 'user',
+    error: 'Marked stopped by the Boss during recovery.',
+    ended: true
+  })
 }
 
 export function stopMeeting(meetingId: string): MeetingSummary {

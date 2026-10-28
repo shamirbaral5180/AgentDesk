@@ -12,6 +12,16 @@ import {
   type AppSettings,
   type AppUpdateInfo,
   type ChatAttachment,
+  type DataStats,
+  type DiagnosticsBundle,
+  type ExportRequest,
+  type ExportResult,
+  type MaintenanceResult,
+  type RecoveryReport,
+  type ResetRequest,
+  type ResetResult,
+  type SettingsPreferencesPatch,
+  type UsageSummary,
   type ChatSendRequest,
   type ChatSessionDetail,
   type ChatSessionSummary,
@@ -49,7 +59,8 @@ import { createLogger } from '../config/logger'
 import {
   loadSettings,
   removeRecentProject,
-  updateSettings
+  updateSettings,
+  updateSettingsPreferences
 } from '../config/settings'
 import { AppError, toIpcError } from '../errors'
 import {
@@ -107,8 +118,10 @@ import {
   createMeeting,
   getMeeting,
   listMeetings,
+  markMeetingStopped,
   pauseMeeting,
   queueMeetingInterrupt,
+  resumeMeeting,
   sendDirectMeetingMessage,
   startMeeting,
   stopMeeting
@@ -128,8 +141,28 @@ import {
 } from '../mcp/mcpService'
 import {
   checkForUpdates,
+  dismissUpdate,
   openUpdateDownload
 } from '../updates/updateService'
+import {
+  backupNow,
+  dataStats,
+  pruneData,
+  restoreBackup,
+  vacuumDatabase
+} from '../db/maintenanceService'
+import {
+  buildDiagnostics,
+  exportDiagnostics,
+  exportProjectData,
+  resetProjectData,
+  usageSummary
+} from '../data/dataService'
+import {
+  currentRecoveryReport,
+  markRecoveredMeetingStopped,
+  recoverProjectOnOpen
+} from '../recovery/recoveryService'
 
 const log = createLogger('ipc')
 
@@ -147,6 +180,37 @@ const settingsPatchArgument = z
     theme: z.enum(['dark', 'light', 'system']).optional()
   })
   .strict()
+
+const settingsPreferencesArgument = z
+  .object({
+    retention: z
+      .object({
+        sessionDays: z.number().int().min(1).max(3650).optional(),
+        meetingDays: z.number().int().min(1).max(3650).optional(),
+        usageDays: z.number().int().min(1).max(3650).optional(),
+        mcpAuditDays: z.number().int().min(1).max(3650).optional(),
+        toolCallDays: z.number().int().min(1).max(3650).optional(),
+        commandLogDays: z.number().int().min(1).max(3650).optional(),
+        snapshotDays: z.number().int().min(1).max(3650).optional(),
+        databaseBackups: z.number().int().min(1).max(50).optional()
+      })
+      .optional(),
+    costControl: z
+      .object({
+        monthlyCapUsd: z.number().nonnegative().max(100_000).optional(),
+        warnPercent: z.number().int().min(1).max(100).optional(),
+        hardStop: z.boolean().optional()
+      })
+      .optional(),
+    updates: z
+      .object({
+        dismissedVersion: z.string().max(40).nullable().optional(),
+        lastCheckedAt: z.number().int().nonnegative().nullable().optional()
+      })
+      .optional(),
+    clearRecovery: z.boolean().optional()
+  })
+  .strict() as z.ZodType<SettingsPreferencesPatch>
 
 const providerTypeArgument = z.enum(['openai', 'google', 'ollama', 'custom'])
 
@@ -350,6 +414,38 @@ const mcpCallsArgument = z.object({
   serverId: z.string().min(1).max(200).optional()
 })
 
+const exportArgument = z.object({
+  scope: z.enum(['project', 'meeting']),
+  meetingId: z.string().min(1).max(200).optional(),
+  includeAttachments: z.boolean()
+}) as z.ZodType<ExportRequest>
+
+const resetArgument = z.object({
+  scope: z.enum(['personal_memory', 'shared_memory', 'session_memory', 'logs_cache']),
+  agentId: z.string().min(1).max(200).optional(),
+  sessionId: z.string().min(1).max(200).optional(),
+  confirm: z.string().min(1).max(20)
+}) as z.ZodType<ResetRequest>
+
+async function chooseOutputDirectory(title: string): Promise<string | null> {
+  const window = BrowserWindow.getFocusedWindow()
+  const result = window
+    ? await dialog.showOpenDialog(window, {
+        title,
+        buttonLabel: 'Use this folder',
+        properties: ['openDirectory', 'createDirectory']
+      })
+    : await dialog.showOpenDialog({
+        title,
+        buttonLabel: 'Use this folder',
+        properties: ['openDirectory', 'createDirectory']
+      })
+  if (result.canceled || result.filePaths.length === 0) {
+    return null
+  }
+  return result.filePaths[0]
+}
+
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
 }
@@ -427,6 +523,11 @@ export function registerIpcHandlers(): void {
     return updateSettings(patch)
   })
 
+  register<AppSettings>(IPC_CHANNELS.settingsPreferences, (rawPatch) => {
+    const patch = parseArgument(settingsPreferencesArgument, rawPatch)
+    return updateSettingsPreferences(patch)
+  })
+
   register<ProjectInfo | null>(IPC_CHANNELS.projectPick, async () => {
     const window = BrowserWindow.getFocusedWindow()
     const options: OpenDialogOptions = {
@@ -444,6 +545,7 @@ export function registerIpcHandlers(): void {
     cancelAllMeetings()
     killAllManagedProcesses()
     const project = openProject(result.filePaths[0])
+    recoverProjectOnOpen()
     warmProjectMcp()
     return project
   })
@@ -454,6 +556,7 @@ export function registerIpcHandlers(): void {
     cancelAllMeetings()
     killAllManagedProcesses()
     const project = openProject(argument.path)
+    recoverProjectOnOpen()
     warmProjectMcp()
     return project
   })
@@ -619,6 +722,16 @@ export function registerIpcHandlers(): void {
     return approveMeetingPlan(argument.meetingId)
   })
 
+  registerWithSender<MeetingSummary>(IPC_CHANNELS.meetingResume, (sender, rawArgument) => {
+    const argument = parseArgument(meetingIdArgument, rawArgument)
+    return resumeMeeting(sender, argument.meetingId)
+  })
+
+  register<MeetingSummary>(IPC_CHANNELS.meetingMarkStopped, (rawArgument) => {
+    const argument = parseArgument(meetingIdArgument, rawArgument)
+    return markMeetingStopped(argument.meetingId)
+  })
+
   registerWithSender<{ testId: string }>(IPC_CHANNELS.modelTestStart, (sender, rawArgument) => {
     const request = parseArgument(
       modelTestArgument,
@@ -756,6 +869,57 @@ export function registerIpcHandlers(): void {
     await openUpdateDownload(argument.url)
     return null
   })
+
+  register<AppSettings>(IPC_CHANNELS.updateDismiss, (rawArgument) => {
+    const argument = parseArgument(
+      z.object({ version: z.string().min(1).max(40) }),
+      rawArgument
+    )
+    return dismissUpdate(argument.version)
+  })
+
+  register<RecoveryReport>(IPC_CHANNELS.recoveryReport, () => currentRecoveryReport())
+
+  register<RecoveryReport>(IPC_CHANNELS.recoveryMarkStopped, (rawArgument) => {
+    const argument = parseArgument(meetingIdArgument, rawArgument)
+    markMeetingStopped(argument.meetingId)
+    return markRecoveredMeetingStopped(argument.meetingId)
+  })
+
+  register<DataStats>(IPC_CHANNELS.dataStats, () => dataStats())
+
+  register<MaintenanceResult>(IPC_CHANNELS.dataBackup, () => backupNow('manual'))
+
+  register<MaintenanceResult>(IPC_CHANNELS.dataRestore, () => restoreBackup())
+
+  register<MaintenanceResult>(IPC_CHANNELS.dataPrune, () => pruneData())
+  register<MaintenanceResult>(IPC_CHANNELS.dataVacuum, () => vacuumDatabase())
+
+  register<ExportResult | null>(IPC_CHANNELS.dataExport, async (rawArgument) => {
+    const request = parseArgument(exportArgument, rawArgument)
+    const directory = await chooseOutputDirectory('Choose where to export AgentDesk data')
+    if (!directory) {
+      return null
+    }
+    return exportProjectData(request, directory)
+  })
+
+  register<ResetResult>(IPC_CHANNELS.dataReset, (rawArgument) => {
+    const request = parseArgument(resetArgument, rawArgument)
+    return resetProjectData(request)
+  })
+
+  register<DiagnosticsBundle>(IPC_CHANNELS.diagnosticsGet, () => buildDiagnostics())
+
+  register<ExportResult | null>(IPC_CHANNELS.diagnosticsExport, async () => {
+    const directory = await chooseOutputDirectory('Choose where to save diagnostics')
+    if (!directory) {
+      return null
+    }
+    return exportDiagnostics(directory)
+  })
+
+  register<UsageSummary>(IPC_CHANNELS.usageSummary, () => usageSummary())
 
   register<MemoryBundle>(IPC_CHANNELS.memoryList, () => listMemory())
 

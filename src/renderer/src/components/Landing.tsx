@@ -59,6 +59,11 @@ function foundationFor(settings: AppSettings) {
       title: 'MCP and external tools',
       detail: 'Global catalog, project policies, stdio/HTTP/SSE, approvals, logs, and audit.',
       ready: true
+    },
+    {
+      title: 'Recovery and data controls',
+      detail: 'Run checkpoints, resume, backup/restore, retention, export, reset, and diagnostics.',
+      ready: true
     }
   ]
 }
@@ -142,7 +147,7 @@ export function Landing({
                 <span className="eyebrow">Build status</span>
                 <h2>Foundation</h2>
               </div>
-              <span className="phase-badge">Phase 8</span>
+              <span className="phase-badge">Phase 9</span>
             </div>
             <div className="foundation-list">
               {foundation.map((item) => (

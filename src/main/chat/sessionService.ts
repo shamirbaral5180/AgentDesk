@@ -338,6 +338,38 @@ export function deleteChatMessage(messageId: string): void {
   database().prepare('DELETE FROM messages WHERE id = ?').run(messageId)
 }
 
+export function markChatMessageInterrupted(messageId: string): void {
+  const row = database()
+    .prepare('SELECT content, metadata_json FROM messages WHERE id = ?')
+    .get(messageId) as { content: string; metadata_json: string | null } | undefined
+  if (!row) {
+    return
+  }
+  let metadata: Record<string, unknown> = {}
+  try {
+    metadata = JSON.parse(row.metadata_json ?? '{}') as Record<string, unknown>
+  } catch {
+    metadata = {}
+  }
+  if (metadata.status !== 'streaming') {
+    return
+  }
+  metadata.status = 'interrupted'
+  metadata.interrupted = true
+  metadata.retryable = true
+  metadata.error =
+    'AgentDesk stopped before this response finished. Retry the message manually.'
+  database()
+    .prepare('UPDATE messages SET content = ?, metadata_json = ? WHERE id = ?')
+    .run(
+      row.content.trim()
+        ? row.content
+        : 'Interrupted before the response completed. Retry manually.',
+      JSON.stringify(metadata),
+      messageId
+    )
+}
+
 export function setChatSessionTitle(sessionId: string, title: string): void {
   const trimmed = title.trim().slice(0, 90)
   if (!trimmed) {

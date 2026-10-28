@@ -745,7 +745,7 @@ export async function captureWindow(
 
 export async function openSettingsTab(
   window: BrowserWindow,
-  tab: 'Providers' | 'Team' | 'MCP' | 'Memory'
+  tab: 'Providers' | 'Team' | 'MCP' | 'Memory' | 'Data' | 'About'
 ): Promise<void> {
   if (window.webContents.isLoading()) {
     await new Promise<void>((resolve) => {

@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawn } from 'node:child_process'
 import type {
   McpProjectConfig,
   McpServerConfig,
@@ -7,6 +10,8 @@ import type {
   McpToolPolicy
 } from '@shared/types'
 import { AppError } from '../errors'
+import { getAppPaths } from '../config/appPaths'
+import { ensureDir, tryReadJsonFile, writeJsonAtomic } from '../utils/fs'
 import {
   appendMcpLog,
   getMcpServer,
@@ -30,18 +35,120 @@ type RuntimeState = {
 
 const states = new Map<string, RuntimeState>()
 
+const MAX_MCP_RESULT_CHARS = 64_000
+
+function toolCachePath(serverId: string): string {
+  return path.join(getAppPaths().mcpRuntimeDir, `${serverId}.tools.json`)
+}
+
+function pidCachePath(serverId: string): string {
+  return path.join(getAppPaths().mcpRuntimeDir, `${serverId}.pid.json`)
+}
+
+function loadCachedTools(serverId: string): McpToolDescriptor[] {
+  const cached = tryReadJsonFile<{ tools?: McpToolDescriptor[] }>(toolCachePath(serverId))
+  return Array.isArray(cached?.tools) ? cached.tools : []
+}
+
+function persistCachedTools(serverId: string, tools: McpToolDescriptor[]): void {
+  try {
+    ensureDir(getAppPaths().mcpRuntimeDir)
+    writeJsonAtomic(toolCachePath(serverId), { tools })
+  } catch {
+    // A cache miss only costs one discovery round.
+  }
+}
+
+function persistPid(serverId: string, pid: number | undefined): void {
+  try {
+    ensureDir(getAppPaths().mcpRuntimeDir)
+    if (!pid) {
+      fs.rmSync(pidCachePath(serverId), { force: true })
+      return
+    }
+    writeJsonAtomic(pidCachePath(serverId), { pid, startedAt: Date.now() })
+  } catch {
+    // Cleanup stays best effort.
+  }
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+function killPid(pid: number): void {
+  if (process.platform === 'win32') {
+    try {
+      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+      killer.on('error', () => {
+        try {
+          process.kill(pid)
+        } catch {
+          // Already gone.
+        }
+      })
+    } catch {
+      try {
+        process.kill(pid)
+      } catch {
+        // Already gone.
+      }
+    }
+    return
+  }
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    // Already gone.
+  }
+}
+
+export function reconcileMcpProcesses(): number {
+  const runtimeDir = getAppPaths().mcpRuntimeDir
+  if (!fs.existsSync(runtimeDir)) {
+    return 0
+  }
+  let killed = 0
+  for (const name of fs.readdirSync(runtimeDir)) {
+    if (!name.endsWith('.pid.json')) {
+      continue
+    }
+    const target = path.join(runtimeDir, name)
+    const cached = tryReadJsonFile<{ pid?: number }>(target)
+    if (cached?.pid && Number.isInteger(cached.pid) && pidIsAlive(cached.pid)) {
+      killPid(cached.pid)
+      killed += 1
+    }
+    try {
+      fs.rmSync(target, { force: true })
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
+  return killed
+}
+
 function stateFor(serverId: string): RuntimeState {
   const existing = states.get(serverId)
   if (existing) {
     return existing
   }
+  const cachedTools = loadCachedTools(serverId)
   const state: RuntimeState = {
     status: {
       state: 'stopped',
-      toolCount: 0,
+      toolCount: cachedTools.length,
       lastError: null
     },
-    tools: [],
+    tools: cachedTools,
     connection: null
   }
   states.set(serverId, state)
@@ -135,9 +242,11 @@ export async function ensureServerReady(serverId: string): Promise<McpServerView
     const connection = openMcpConnection(server)
     state.connection = connection
     state.status.pid = connection.pid
+    persistPid(server.id, connection.pid)
     await initializeMcp(connection, server)
     const tools = await listMcpTools(connection)
     state.tools = tools
+    persistCachedTools(server.id, tools)
     state.status = {
       state: 'ready',
       toolCount: tools.length,
@@ -161,6 +270,7 @@ export async function ensureServerReady(serverId: string): Promise<McpServerView
       state.connection.close()
       state.connection = null
     }
+    persistPid(server.id, undefined)
     appendMcpLog(server.id, `connection failed: ${message}`)
     throw new AppError('MCP_CONNECT_FAILED', `Could not connect to ${server.name}: ${message}`)
   }
@@ -186,10 +296,12 @@ export function closeServer(serverId: string): void {
   }
   state.connection?.close()
   state.connection = null
-  state.tools = []
+  persistPid(serverId, undefined)
+  const cached = loadCachedTools(serverId)
+  state.tools = cached
   state.status = {
     state: 'stopped',
-    toolCount: 0,
+    toolCount: cached.length,
     lastError: null
   }
   appendMcpLog(serverId, 'closed')
@@ -233,9 +345,6 @@ export function toolsForProject(input: {
       continue
     }
     const state = stateFor(serverId)
-    if (state.status.state !== 'ready') {
-      continue
-    }
     for (const tool of state.tools) {
       const info = toolInfo(server, tool, project)
       if (info.policy === 'deny' && !includeDenied) {
@@ -281,10 +390,29 @@ export async function callTool(input: {
   }
   const startedAt = Date.now()
   try {
-    const result = (await callMcpTool(connection, input.tool.name, input.args)) as {
+    let result: {
       content?: Array<Record<string, unknown>>
       structuredContent?: unknown
       isError?: boolean
+    }
+    try {
+      result = (await callMcpTool(connection, input.tool.name, input.args)) as typeof result
+    } catch (transportError) {
+      const message =
+        transportError instanceof Error ? transportError.message : String(transportError)
+      if (!/closed|disconnected|socket|econn|terminated|not connected|transport/i.test(message)) {
+        throw transportError
+      }
+      appendMcpLog(server.id, `transport dropped; reconnecting before retry: ${message}`)
+      const restarted = await ensureServerReady(server.id)
+      if (restarted.status.state !== 'ready') {
+        throw transportError
+      }
+      const retryConnection = stateFor(server.id).connection
+      if (!retryConnection) {
+        throw transportError
+      }
+      result = (await callMcpTool(retryConnection, input.tool.name, input.args)) as typeof result
     }
     const text = (result.content ?? [])
       .map((part) => {
@@ -297,8 +425,13 @@ export async function callTool(input: {
         return JSON.stringify(part)
       })
       .join('\n')
+    const rawText = text || JSON.stringify(result.structuredContent ?? result)
+    const capped =
+      rawText.length > MAX_MCP_RESULT_CHARS
+        ? `${rawText.slice(0, MAX_MCP_RESULT_CHARS)}\n[truncated: MCP result exceeded ${MAX_MCP_RESULT_CHARS} characters]`
+        : rawText
     const normalized = {
-      text: text || JSON.stringify(result.structuredContent ?? result),
+      text: `[UNTRUSTED MCP OUTPUT - ${server.name}/${input.tool.name}]\n${capped}`,
       content: result.content ?? result,
       structuredContent: result.structuredContent,
       isError: result.isError === true

@@ -383,5 +383,32 @@ CREATE TABLE IF NOT EXISTS mcp_calls (
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_server ON mcp_calls(server_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_session ON mcp_calls(session_id, created_at);
 `
+  },
+  {
+    version: 7,
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_meetings_mode ON meetings(mode, updated_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status, last_opened_at);
+`
+  },
+  {
+    version: 8,
+    sql: `
+CREATE TABLE IF NOT EXISTS run_leases (
+  id TEXT PRIMARY KEY,
+  session_id TEXT,
+  meeting_id TEXT,
+  kind TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  checkpoint_json TEXT,
+  started_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL,
+  ended_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_run_leases_status ON run_leases(status, heartbeat_at);
+CREATE INDEX IF NOT EXISTS idx_run_leases_meeting ON run_leases(meeting_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_run_leases_session ON run_leases(session_id, started_at);
+`
   }
 ]

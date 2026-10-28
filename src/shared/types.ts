@@ -7,6 +7,7 @@ export const IPC_CHANNELS = {
   appRevealData: 'app:reveal-data',
   settingsGet: 'settings:get',
   settingsUpdate: 'settings:update',
+  settingsPreferences: 'settings:preferences',
   projectPick: 'project:pick',
   projectOpenRecent: 'project:open-recent',
   projectCurrent: 'project:current',
@@ -58,6 +59,8 @@ export const IPC_CHANNELS = {
   meetingInterrupt: 'meeting:interrupt',
   meetingDirect: 'meeting:direct',
   meetingApprovePlan: 'meeting:approve-plan',
+  meetingResume: 'meeting:resume',
+  meetingMarkStopped: 'meeting:mark-stopped',
   meetingEvent: 'meeting:event',
   mcpList: 'mcp:list',
   mcpAdd: 'mcp:add',
@@ -71,7 +74,20 @@ export const IPC_CHANNELS = {
   mcpCalls: 'mcp:calls',
   updateCheck: 'update:check',
   updateOpen: 'update:open',
-  updateEvent: 'update:event'
+  updateDismiss: 'update:dismiss',
+  updateEvent: 'update:event',
+  recoveryReport: 'recovery:report',
+  recoveryMarkStopped: 'recovery:mark-stopped',
+  dataStats: 'data:stats',
+  dataBackup: 'data:backup',
+  dataRestore: 'data:restore',
+  dataPrune: 'data:prune',
+  dataVacuum: 'data:vacuum',
+  dataExport: 'data:export',
+  dataReset: 'data:reset',
+  diagnosticsExport: 'diagnostics:export',
+  diagnosticsGet: 'diagnostics:get',
+  usageSummary: 'usage:summary'
 } as const
 
 export type ThemePreference = 'dark' | 'light' | 'system'
@@ -227,8 +243,173 @@ export type AppUpdateInfo = {
   releaseUrl: string | null
   downloadUrl: string | null
   publishedAt: string | null
+  releaseNotes: string | null
   checkedAt: number
   error?: string
+}
+
+export type SettingsRecoveryNotice = {
+  recoveredAt: number
+  notes: string[]
+  backupPaths: string[]
+}
+
+export type RetentionSettings = {
+  sessionDays: number
+  meetingDays: number
+  usageDays: number
+  mcpAuditDays: number
+  toolCallDays: number
+  commandLogDays: number
+  snapshotDays: number
+  databaseBackups: number
+}
+
+export type CostControlSettings = {
+  monthlyCapUsd: number
+  warnPercent: number
+  hardStop: boolean
+}
+
+export type UpdatePreferences = {
+  dismissedVersion: string | null
+  lastCheckedAt: number | null
+}
+
+export type RunKind = 'plan' | 'build' | 'chat'
+export type RunLeaseStatus = 'running' | 'stale' | 'completed' | 'stopped'
+
+export type MeetingCheckpoint = {
+  phase: 'intake' | 'discussion' | 'planning' | 'build' | 'review' | 'report' | 'done'
+  round: number
+  completedIntakeAgentIds: string[]
+  completedDiscussionAgentIds: string[]
+  planningStarted: boolean
+  planProduced: boolean
+  taskIndex: number
+  currentTaskId: string | null
+  reviewCycle: number
+  completedTaskIds: string[]
+  reviewResults: Array<{
+    taskId: string
+    taskTitle: string
+    status: 'approved' | 'changes_requested'
+    summary: string
+    issues: string[]
+    testsRun: string[]
+    testsPassed: boolean
+  }>
+  reportStarted: boolean
+  updatedAt: number
+}
+
+export type RecoveryItem = {
+  leaseId: string
+  kind: RunKind
+  status: RunLeaseStatus
+  sessionId: string | null
+  meetingId: string | null
+  title: string
+  phase: string | null
+  canResume: boolean
+  checkpoint: MeetingCheckpoint | null
+  startedAt: number
+  heartbeatAt: number
+}
+
+export type RecoveryReport = {
+  scannedAt: number
+  items: RecoveryItem[]
+  releasedClaims: number
+  cancelledApprovals: number
+  interruptedMessages: number
+  staleProcesses: number
+  recoveredSettings: SettingsRecoveryNotice | null
+  recoveredSecrets: SettingsRecoveryNotice | null
+}
+
+export type DataTableStat = {
+  name: string
+  rows: number
+}
+
+export type DataStats = {
+  dbBytes: number
+  walBytes: number
+  projectBytes: number
+  backups: Array<{ path: string; bytes: number; createdAt: number }>
+  lastBackupAt: number | null
+  tables: DataTableStat[]
+  retention: RetentionSettings
+  integrity: 'ok' | 'failed'
+  quickCheck: string
+}
+
+export type MaintenanceResult = {
+  pruned: Record<string, number>
+  vacuumed: boolean
+  bytesBefore: number
+  bytesAfter: number
+  backupPath: string | null
+  notes: string[]
+}
+
+export type ExportRequest = {
+  scope: 'project' | 'meeting'
+  meetingId?: string
+  includeAttachments: boolean
+}
+
+export type ExportResult = {
+  directory: string
+  files: string[]
+  bytes: number
+}
+
+export type ResetScope =
+  | 'personal_memory'
+  | 'shared_memory'
+  | 'session_memory'
+  | 'logs_cache'
+
+export type ResetRequest = {
+  scope: ResetScope
+  agentId?: string
+  sessionId?: string
+  confirm: string
+}
+
+export type ResetResult = {
+  scope: ResetScope
+  removed: number
+  notes: string[]
+}
+
+export type UsageByGroup = {
+  label: string
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  records: number
+}
+
+export type UsageSummary = {
+  totalCostUsd: number
+  monthCostUsd: number
+  totalTokens: number
+  records: number
+  monthlyCapUsd: number
+  warn: boolean
+  blocked: boolean
+  byDay: UsageByGroup[]
+  byProvider: UsageByGroup[]
+  byModel: UsageByGroup[]
+  byMeeting: UsageByGroup[]
+}
+
+export type DiagnosticsBundle = {
+  generatedAt: number
+  text: string
 }
 
 export type TeamConfig = {
@@ -464,9 +645,11 @@ export type ChatMessageMetadata = {
   modelMessages?: unknown
   usage?: ChatUsage
   durationMs?: number
-  status?: 'streaming' | 'done' | 'cancelled' | 'error'
+  status?: 'streaming' | 'done' | 'cancelled' | 'error' | 'interrupted'
   error?: string
   cancelled?: boolean
+  interrupted?: boolean
+  retryable?: boolean
 }
 
 export type ChatMessage = {
@@ -1141,6 +1324,10 @@ export type AppSettings = {
   window: WindowState
   providers: ProviderConfig[]
   models: ModelRecord[]
+  retention: RetentionSettings
+  costControl: CostControlSettings
+  updates: UpdatePreferences
+  recovery: SettingsRecoveryNotice | null
   createdAt: number
   updatedAt: number
 }
@@ -1148,6 +1335,13 @@ export type AppSettings = {
 export type SettingsPatch = {
   bossName?: string
   theme?: ThemePreference
+}
+
+export type SettingsPreferencesPatch = {
+  retention?: Partial<RetentionSettings>
+  costControl?: Partial<CostControlSettings>
+  updates?: Partial<UpdatePreferences>
+  clearRecovery?: boolean
 }
 
 export type AppInfo = {
@@ -1236,6 +1430,9 @@ export type AgentDeskApi = {
   revealDataFolder: () => Promise<IpcResult<null>>
   getSettings: () => Promise<IpcResult<AppSettings>>
   updateSettings: (patch: SettingsPatch) => Promise<IpcResult<AppSettings>>
+  updateSettingsPreferences: (
+    patch: SettingsPreferencesPatch
+  ) => Promise<IpcResult<AppSettings>>
   pickProject: () => Promise<IpcResult<ProjectInfo | null>>
   openRecentProject: (path: string) => Promise<IpcResult<ProjectInfo>>
   getCurrentProject: () => Promise<IpcResult<ProjectInfo | null>>
@@ -1298,6 +1495,8 @@ export type AgentDeskApi = {
     request: MeetingDirectMessageRequest
   ) => Promise<IpcResult<MeetingSummary>>
   approveMeetingPlan: (meetingId: string) => Promise<IpcResult<MeetingDetail>>
+  resumeMeeting: (meetingId: string) => Promise<IpcResult<MeetingSummary>>
+  markMeetingStopped: (meetingId: string) => Promise<IpcResult<MeetingSummary>>
   onMeetingEvent: (listener: (event: MeetingEvent) => void) => () => void
   listMcpServers: () => Promise<IpcResult<McpServerView[]>>
   addMcpServer: (draft: McpServerDraft) => Promise<IpcResult<McpServerView>>
@@ -1313,7 +1512,20 @@ export type AgentDeskApi = {
   listMcpCalls: (serverId?: string) => Promise<IpcResult<McpCallAudit[]>>
   checkForUpdates: () => Promise<IpcResult<AppUpdateInfo>>
   openUpdateDownload: (url: string) => Promise<IpcResult<null>>
+  dismissUpdate: (version: string) => Promise<IpcResult<AppSettings>>
   onUpdateEvent: (listener: (event: AppUpdateInfo) => void) => () => void
+  getRecoveryReport: () => Promise<IpcResult<RecoveryReport>>
+  markRecoveryStopped: (meetingId: string) => Promise<IpcResult<RecoveryReport>>
+  getDataStats: () => Promise<IpcResult<DataStats>>
+  backupData: () => Promise<IpcResult<MaintenanceResult>>
+  restoreData: () => Promise<IpcResult<MaintenanceResult>>
+  pruneData: () => Promise<IpcResult<MaintenanceResult>>
+  vacuumData: () => Promise<IpcResult<MaintenanceResult>>
+  exportData: (request: ExportRequest) => Promise<IpcResult<ExportResult | null>>
+  resetData: (request: ResetRequest) => Promise<IpcResult<ResetResult>>
+  getDiagnostics: () => Promise<IpcResult<DiagnosticsBundle>>
+  exportDiagnostics: () => Promise<IpcResult<ExportResult | null>>
+  getUsageSummary: () => Promise<IpcResult<UsageSummary>>
 }
 
 

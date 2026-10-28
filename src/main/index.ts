@@ -6,7 +6,8 @@ import {
   dialog,
   Menu,
   nativeTheme,
-  screen
+  screen,
+  session
 } from 'electron'
 import type { Rectangle } from 'electron'
 import { initializeAppPaths } from './config/appPaths'
@@ -42,6 +43,7 @@ import { runPhase5Smoke } from './phase5Smoke'
 import { runPhase6Smoke } from './phase6Smoke'
 import { runPhase7Smoke } from './phase7Smoke'
 import { runPhase8Smoke } from './phase8Smoke'
+import { runPhase9Smoke } from './phase9Smoke'
 import { checkForUpdates } from './updates/updateService'
 import { closeAllServers } from './mcp/mcpManager'
 import { createMockChatServer, type MockChatServer } from './chatMock'
@@ -59,6 +61,7 @@ const isPhase5Smoke = process.argv.includes('--phase5-smoke')
 const isPhase6Smoke = process.argv.includes('--phase6-smoke')
 const isPhase7Smoke = process.argv.includes('--phase7-smoke')
 const isPhase8Smoke = process.argv.includes('--phase8-smoke')
+const isPhase9Smoke = process.argv.includes('--phase9-smoke')
 const screenshotArgument = process.argv.find((argument) => argument.startsWith('--screenshot'))
 const isScreenshotMode = Boolean(screenshotArgument)
 const screenshotTarget =
@@ -181,6 +184,9 @@ function createWindow(): void {
   })
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault()
+  })
 
   window.webContents.on('will-navigate', (event, url) => {
     const devUrl = process.env['ELECTRON_RENDERER_URL']
@@ -217,6 +223,7 @@ const hasSingleInstanceLock =
   isPhase6Smoke ||
   isPhase7Smoke ||
   isPhase8Smoke ||
+  isPhase9Smoke ||
   isScreenshotMode
     ? true
     : app.requestSingleInstanceLock()
@@ -283,6 +290,10 @@ if (!hasSingleInstanceLock) {
 
     nativeTheme.themeSource = 'dark'
     Menu.setApplicationMenu(null)
+    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+      callback(false)
+    })
+    session.defaultSession.setPermissionCheckHandler(() => false)
 
     if (isSmokeTest) {
       const exitCode = await runSmokeTest()
@@ -328,6 +339,12 @@ if (!hasSingleInstanceLock) {
 
     if (isPhase8Smoke) {
       const exitCode = await runPhase8Smoke()
+      app.exit(exitCode)
+      return
+    }
+
+    if (isPhase9Smoke) {
+      const exitCode = await runPhase9Smoke()
       app.exit(exitCode)
       return
     }
@@ -441,6 +458,18 @@ if (!hasSingleInstanceLock) {
             mainWindow,
             `screenshot-${screenshotTarget}-bottom.png`,
             '.meeting-scroll'
+          )
+        } else if (screenshotTarget === 'data') {
+          await openSettingsTab(mainWindow, 'Data')
+          await new Promise<void>((resolve) => setTimeout(resolve, 1200))
+          topShot = await captureWindow(
+            mainWindow,
+            `screenshot-${screenshotTarget}.png`
+          )
+          bottomShot = await captureWindow(
+            mainWindow,
+            `screenshot-${screenshotTarget}-bottom.png`,
+            '.modal-body'
           )
         } else if (screenshotTarget === 'mcp') {
           await openSettingsTab(mainWindow, 'MCP')

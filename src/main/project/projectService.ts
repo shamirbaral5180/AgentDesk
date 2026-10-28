@@ -310,7 +310,11 @@ export function openProject(folderPath: string): ProjectInfo {
     acquireProjectLock(lockPath)
     lockAcquired = true
 
-    database = openProjectDatabase(dbPath, path.join(dataDir, 'backups'))
+    database = openProjectDatabase(
+      dbPath,
+      path.join(dataDir, 'backups'),
+      settings.retention.databaseBackups
+    )
     const info = buildProjectInfo(root, structure.manifest, structure.team, dbPath)
 
     current = {
@@ -405,6 +409,24 @@ export function updateCurrentTeam(updater: (team: TeamConfig) => TeamConfig): Te
 
 export function getCurrentProjectDatabase(): ProjectDatabase | null {
   return current?.database ?? null
+}
+
+export function reopenCurrentProjectDatabase(): ProjectDatabase {
+  if (!current) {
+    throw new AppError('NO_PROJECT', 'No project is currently open.')
+  }
+  try {
+    current.database.close()
+  } catch {
+    // The database may already be closed by a restore operation.
+  }
+  const reopened = openProjectDatabase(
+    current.dbPath,
+    path.join(current.dataDir, 'backups'),
+    loadSettings().retention.databaseBackups
+  )
+  current.database = reopened
+  return reopened
 }
 
 export function getCurrentProjectRoot(): string | null {

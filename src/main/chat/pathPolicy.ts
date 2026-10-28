@@ -22,6 +22,8 @@ const ALWAYS_PROTECTED_DIRS = new Set([
   'venv'
 ])
 
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+
 const SENSITIVE_FILE_PATTERNS = [
   /^\.env(\.|$)/i,
   /^\.npmrc$/i,
@@ -81,14 +83,32 @@ function assertNotProtected(relativePath: string): string {
   if (!relative) {
     throw new AppError('INVALID_PATH', 'A file path is required.')
   }
-  if (path.isAbsolute(relative) || /^[A-Za-z]:/.test(relative)) {
+  if (
+    path.isAbsolute(relative) ||
+    /^[A-Za-z]:/.test(relative) ||
+    relative.startsWith('//') ||
+    relative.startsWith('\\\\')
+  ) {
     throw new AppError('ABSOLUTE_PATH_DENIED', 'File tools require project-relative paths.')
   }
   const segments = relative.split('/')
   if (segments.some((segment) => segment === '..' || segment === '')) {
     throw new AppError('PATH_ESCAPE_DENIED', 'The path must stay inside the project.')
   }
-  if (segments.some((segment) => ALWAYS_PROTECTED_DIRS.has(segment))) {
+  if (
+    segments.some(
+      (segment) =>
+        segment.includes(':') ||
+        /[. ]$/.test(segment) ||
+        WINDOWS_RESERVED.test(segment)
+    )
+  ) {
+    throw new AppError(
+      'PATH_ESCAPE_DENIED',
+      'Windows alternate data streams, reserved names, and trailing dots or spaces are blocked.'
+    )
+  }
+  if (segments.some((segment) => ALWAYS_PROTECTED_DIRS.has(segment.toLowerCase()))) {
     throw new AppError(
       'PROTECTED_PATH',
       'That path is private, generated, or excluded from agent file tools.'
@@ -128,6 +148,13 @@ export function resolveWritableProjectPath(
     const stat = fs.lstatSync(absolute)
     if (stat.isSymbolicLink()) {
       throw new AppError('SYMLINK_DENIED', 'Symbolic links cannot be modified.')
+    }
+    const realTarget = fs.realpathSync(absolute)
+    if (!isPathInside(root, realTarget)) {
+      throw new AppError(
+        'PATH_ESCAPE_DENIED',
+        'The target path resolves outside the project through a link.'
+      )
     }
   }
   return { relative, absolute }

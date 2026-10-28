@@ -37,20 +37,24 @@ export function buildMcpToolBundle(input: {
         }
       ),
       execute: async (args: Record<string, unknown>) => {
-        if (info.policy === 'ask') {
+        if (info.policy === 'ask' || info.destructive) {
           const approval = await runtime.requestApproval({
             actionType: 'mcp_call',
-            actionKey: `mcp_call:${info.namespacedName}`,
+            actionKey: `mcp_call:${info.namespacedName}:${info.destructive ? 'destructive' : 'standard'}`,
             risk: info.destructive ? 'high' : 'medium',
-            reason: `Call ${info.serverName} / ${info.name}`,
+            reason: info.destructive
+              ? `Destructive MCP call: ${info.serverName} / ${info.name}. Every destructive call requires explicit Boss approval.`
+              : `Call ${info.serverName} / ${info.name}`,
             payload: {
               operation: 'mcp_call',
               serverId: info.serverId,
               serverName: info.serverName,
               toolName: info.name,
               tool: info.namespacedName,
+              destructive: info.destructive,
               arguments: args
-            }
+            },
+            neverGrant: info.destructive
           })
           if (approval.decision !== 'approved') {
             throw new Error('The Boss denied this MCP tool call.')

@@ -7093,3 +7093,257 @@ textarea:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.recovery-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(232, 190, 91, 0.42);
+  border-radius: 10px;
+  background: rgba(64, 50, 18, 0.72);
+  color: #f2dfad;
+}
+
+.recovery-banner-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: rgba(232, 190, 91, 0.16);
+  color: var(--gold);
+  flex: none;
+}
+
+.recovery-banner-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.recovery-banner-copy strong {
+  font-size: 10px;
+}
+
+.recovery-banner-copy span {
+  color: #c9bb95;
+  font-size: 8.5px;
+  line-height: 1.5;
+}
+
+.recovery-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.recovery-details {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recovery-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(5, 8, 12, 0.38);
+}
+
+.recovery-detail-row div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recovery-detail-row strong {
+  color: #f3e9cf;
+  font-size: 9px;
+}
+
+.recovery-detail-row span {
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.recovery-detail-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.recovery-note-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--muted-2);
+  font-size: 8.5px;
+  line-height: 1.6;
+}
+
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.data-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 11, 16, 0.45);
+}
+
+.data-grid span {
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.data-grid strong {
+  font-size: 10px;
+}
+
+.retention-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.inline-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 9px;
+  padding-top: 14px;
+}
+
+.inline-notice {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 9px;
+  border: 1px solid var(--line);
+}
+
+.inline-notice.success {
+  color: var(--green);
+  border-color: rgba(91, 214, 153, 0.35);
+  background: rgba(91, 214, 153, 0.08);
+}
+
+.inline-notice.error {
+  color: var(--red);
+  border-color: rgba(255, 119, 119, 0.35);
+  background: rgba(255, 119, 119, 0.08);
+}
+
+.usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 8.5px;
+}
+
+.usage-row span {
+  color: var(--muted-2);
+}
+
+.diagnostics-output {
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #070b10;
+  color: #b8c7d8;
+  font-family: var(--mono);
+  font-size: 8px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.message-error.interrupted {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #f0cf8a;
+  background: rgba(232, 190, 91, 0.08);
+  border-color: rgba(232, 190, 91, 0.3);
+}
+
+.onboarding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.onboarding-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.onboarding-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.onboarding-row strong {
+  font-size: 9px;
+}
+
+.onboarding-row span {
+  color: var(--muted-2);
+  font-size: 8px;
+}
+
+.onboarding-check {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  flex: none;
+  margin-top: 1px;
+  color: #08110c;
+}
+
+.onboarding-check.done {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+@media (max-width: 900px) {
+  .recovery-banner {
+    flex-wrap: wrap;
+  }
+  .recovery-banner-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

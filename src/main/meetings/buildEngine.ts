@@ -11,6 +11,7 @@ import {
   type AgentConfig,
   type ChatToolTrace,
   type ChatUsage,
+  type MeetingCheckpoint,
   type MeetingEvent,
   type MeetingFinalReport,
   type MeetingMessage,
@@ -44,6 +45,13 @@ import {
 } from '../approvals/approvalService'
 import { listChanges } from '../changes/changeService'
 import { stopManagedProcess } from '../commands/commandRunner'
+import {
+  createRunLease,
+  finishRunLease,
+  heartbeatRunLease,
+  meetingCheckpoint,
+  resumableLease
+} from '../recovery/runLeaseService'
 import {
   activeMeetingClaims,
   appendMeetingMessage,
@@ -103,6 +111,35 @@ type BuildContext = {
   }>
   processIds: Set<string>
   stopSignalReason: () => 'user' | 'paused'
+  leaseId: string
+  checkpoint: MeetingCheckpoint
+}
+
+function defaultCheckpoint(): MeetingCheckpoint {
+  return {
+    phase: 'build',
+    round: 0,
+    completedIntakeAgentIds: [],
+    completedDiscussionAgentIds: [],
+    planningStarted: false,
+    planProduced: false,
+    taskIndex: 0,
+    currentTaskId: null,
+    reviewCycle: 0,
+    completedTaskIds: [],
+    reviewResults: [],
+    reportStarted: false,
+    updatedAt: Date.now()
+  }
+}
+
+function saveCheckpoint(context: BuildContext, state: Record<string, unknown>): void {
+  context.checkpoint = { ...context.checkpoint, updatedAt: Date.now() }
+  heartbeatRunLease(context.leaseId, context.checkpoint)
+  setMeetingBuildState(context.meetingId, {
+    ...state,
+    checkpoint: context.checkpoint
+  })
 }
 
 type TurnResult = {
@@ -897,14 +934,25 @@ function finishBuild(input: {
     try {
       stopManagedProcess(processId)
     } catch (error) {
-      log.warn('Could not stop a Build background process', {
-        meetingId: context.meetingId,
-        processId,
-        error
-      })
+      if (!(error instanceof AppError && error.code === 'PROCESS_NOT_FOUND')) {
+        log.warn('Could not stop a Build background process', {
+          meetingId: context.meetingId,
+          processId,
+          error
+        })
+      }
     }
   }
   context.processIds.clear()
+  context.checkpoint.phase = status === 'completed' ? 'done' : context.checkpoint.phase
+  context.checkpoint.updatedAt = Date.now()
+  heartbeatRunLease(context.leaseId, context.checkpoint)
+  setMeetingBuildState(context.meetingId, {
+    phase: context.checkpoint.phase,
+    checkpoint: context.checkpoint,
+    status
+  })
+  finishRunLease(context.leaseId, status === 'completed' ? 'completed' : 'stopped')
   const report = buildReport({ context, summary, status, stopReason, partial })
   setMeetingStatus({
     meetingId: context.meetingId,
@@ -947,6 +995,10 @@ async function runBuild(context: BuildContext): Promise<void> {
   const coordinator = coordinatorAgent(context.meetingId)
   const reviewer = qaAgent(agents, coordinator)
   const planTasks = orderTasks(context.tasks)
+  const completedTaskIds = new Set(context.checkpoint.completedTaskIds)
+  if (context.checkpoint.reviewResults.length > 0) {
+    context.reviewResults = context.checkpoint.reviewResults
+  }
 
   try {
     setMeetingStatus({
@@ -973,14 +1025,18 @@ async function runBuild(context: BuildContext): Promise<void> {
       metadata: { phase: 'build', round: 1, status: 'done' }
     })
 
-    let taskIndex = 0
+    let taskIndex = context.checkpoint.taskIndex
     for (const queued of planTasks) {
       if (context.controller.signal.aborted) {
         stopCurrentBuild(context, context.stopSignalReason())
         return
       }
       const current = context.tasks.find((task) => task.id === queued.id) ?? queued
-      if (current.status === 'done' || current.status === 'blocked') {
+      if (
+        current.status === 'done' ||
+        current.status === 'blocked' ||
+        completedTaskIds.has(current.id)
+      ) {
         continue
       }
       const dependencies = current.dependsOn
@@ -1006,71 +1062,149 @@ async function runBuild(context: BuildContext): Promise<void> {
 
       taskIndex += 1
       const implementer = agentForTask(agents, current, coordinator)
-      let working = transition(context, current, 'in_progress', {
-        agentId: implementer.id,
-        note: `${implementer.name} started the task.`,
-        type: 'start'
-      })
-      setMeetingBuildState(context.meetingId, {
-        taskId: working.id,
-        phase: 'build',
-        taskIndex
-      })
+      const resumeAtReview =
+        context.checkpoint.currentTaskId === current.id &&
+        context.checkpoint.phase === 'review' &&
+        (current.status === 'review' || current.status === 'changes_requested')
+      let working = current
+      let reviewCycle = resumeAtReview ? context.checkpoint.reviewCycle : 0
+      context.checkpoint.taskIndex = taskIndex
+      context.checkpoint.currentTaskId = current.id
+      context.checkpoint.reviewCycle = reviewCycle
+      if (resumeAtReview) {
+        context.checkpoint.phase = 'review'
+        saveCheckpoint(context, {
+          taskId: working.id,
+          phase: 'review',
+          taskIndex,
+          reviewCycle
+        })
+        if (current.status === 'changes_requested') {
+          const priorReview = [...context.reviewResults]
+            .reverse()
+            .find((review) => review.taskId === current.id)
+          const issues = priorReview?.issues ?? [
+            'Resume the requested fix from the saved review checkpoint.'
+          ]
+          try {
+            createTaskClaims({
+              meetingId: context.meetingId,
+              task: working,
+              agent: implementer
+            })
+            const fixTurn = await runBuildTurn({
+              context,
+              agent: implementer,
+              phase: 'build',
+              round: 2 + reviewCycle,
+              kind: 'build',
+              task: working,
+              withTools: true,
+              userText: `QA requested changes before the interruption. Fix only these issues inside the active claim.\n\nTask: ${working.title}\n${issues.map((issue) => `- ${issue}`).join('\n')}`
+            })
+            addUsage(context, fixTurn, 2 + reviewCycle)
+            if (fixTurn.cancelled) {
+              stopCurrentBuild(context, context.stopSignalReason())
+              return
+            }
+          } catch (error) {
+            transition(context, working, 'blocked', {
+              agentId: implementer.id,
+              note: error instanceof Error ? error.message : String(error),
+              type: 'failed'
+            })
+            continue
+          } finally {
+            releaseTaskClaims(context.meetingId, working.id)
+          }
+          working = transition(context, working, 'review', {
+            agentId: reviewer.id,
+            note: `Resumed after the requested fix.`,
+            type: 'review-start'
+          })
+        }
+      } else {
+        working = transition(context, current, 'in_progress', {
+          agentId: implementer.id,
+          note: `${implementer.name} started the task.`,
+          type: 'start'
+        })
+        context.checkpoint.phase = 'build'
+        context.checkpoint.reviewCycle = 0
+        saveCheckpoint(context, {
+          taskId: working.id,
+          phase: 'build',
+          taskIndex
+        })
+
+        try {
+          createTaskClaims({
+            meetingId: context.meetingId,
+            task: working,
+            agent: implementer
+          })
+          const buildTurn = await runBuildTurn({
+            context,
+            agent: implementer,
+            phase: 'build',
+            round: 1,
+            kind: 'build',
+            task: working,
+            withTools: true,
+            userText: `Implement this Build task. Stay inside the active claim.\n\nTask: ${working.title}\n${working.description}\n\nAcceptance: ${working.acceptanceCriteria ?? 'not supplied'}`
+          })
+          addUsage(context, buildTurn, 1)
+          if (buildTurn.cancelled) {
+            stopCurrentBuild(context, context.stopSignalReason())
+            return
+          }
+          if (budgetExceeded(context)) {
+            finishBuild({
+              context,
+              status: 'stopped',
+              stopReason: 'budget',
+              summary: 'Build stopped because a meeting budget limit was reached. Partial work is recorded.',
+              partial: true
+            })
+            return
+          }
+        } catch (error) {
+          releaseTaskClaims(context.meetingId, working.id)
+          transition(context, working, 'blocked', {
+            agentId: implementer.id,
+            note: error instanceof Error ? error.message : String(error),
+            type: 'failed'
+          })
+          continue
+        }
+
+        releaseTaskClaims(context.meetingId, working.id)
+        working = transition(context, working, 'review', {
+          agentId: reviewer.id,
+          note: `${reviewer.name} is reviewing the task.`,
+          type: 'review-start'
+        })
+        context.checkpoint.phase = 'review'
+        saveCheckpoint(context, {
+          taskId: working.id,
+          phase: 'review',
+          taskIndex,
+          reviewCycle
+        })
+      }
 
       let review: ReviewResult | null = null
       let approved = false
-      let reviewCycle = 0
-
-      try {
-        createTaskClaims({
-          meetingId: context.meetingId,
-          task: working,
-          agent: implementer
-        })
-        const buildTurn = await runBuildTurn({
-          context,
-          agent: implementer,
-          phase: 'build',
-          round: 1,
-          kind: 'build',
-          task: working,
-          withTools: true,
-          userText: `Implement this Build task. Stay inside the active claim.\n\nTask: ${working.title}\n${working.description}\n\nAcceptance: ${working.acceptanceCriteria ?? 'not supplied'}`
-        })
-        addUsage(context, buildTurn, 1)
-        if (buildTurn.cancelled) {
-          stopCurrentBuild(context, context.stopSignalReason())
-          return
-        }
-        if (budgetExceeded(context)) {
-          finishBuild({
-            context,
-            status: 'stopped',
-            stopReason: 'budget',
-            summary: 'Build stopped because a meeting budget limit was reached. Partial work is recorded.',
-            partial: true
-          })
-          return
-        }
-      } catch (error) {
-        releaseTaskClaims(context.meetingId, working.id)
-        transition(context, working, 'blocked', {
-          agentId: implementer.id,
-          note: error instanceof Error ? error.message : String(error),
-          type: 'failed'
-        })
-        continue
-      }
-
-      releaseTaskClaims(context.meetingId, working.id)
-      working = transition(context, working, 'review', {
-        agentId: reviewer.id,
-        note: `${reviewer.name} is reviewing the task.`,
-        type: 'review-start'
-      })
 
       while (!approved && reviewCycle < context.budget.maxReviewCycles) {
         reviewCycle += 1
+        context.checkpoint.reviewCycle = reviewCycle
+        saveCheckpoint(context, {
+          taskId: working.id,
+          phase: 'review',
+          taskIndex,
+          reviewCycle
+        })
         if (context.controller.signal.aborted) {
           stopCurrentBuild(context, context.stopSignalReason())
           return
@@ -1122,12 +1256,30 @@ async function runBuild(context: BuildContext): Promise<void> {
           testsRun: review.testsRun,
           testsPassed: review.testsPassed
         })
+        context.checkpoint.reviewResults = context.reviewResults
+        context.checkpoint.reviewCycle = reviewCycle
+        saveCheckpoint(context, {
+          taskId: working.id,
+          phase: 'review',
+          taskIndex,
+          reviewCycle
+        })
         if (review.status === 'approved') {
           approved = true
           transition(context, working, 'done', {
             agentId: reviewer.id,
             note: review.summary,
             type: 'approved'
+          })
+          completedTaskIds.add(working.id)
+          context.checkpoint.completedTaskIds = [...completedTaskIds]
+          context.checkpoint.currentTaskId = null
+          context.checkpoint.phase = 'build'
+          context.checkpoint.reviewCycle = 0
+          saveCheckpoint(context, {
+            taskId: working.id,
+            phase: 'build',
+            taskIndex
           })
           break
         }
@@ -1137,6 +1289,14 @@ async function runBuild(context: BuildContext): Promise<void> {
             agentId: reviewer.id,
             note: `Review limit reached. ${review.summary}`,
             type: 'blocked'
+          })
+          completedTaskIds.add(working.id)
+          context.checkpoint.completedTaskIds = [...completedTaskIds]
+          context.checkpoint.currentTaskId = null
+          saveCheckpoint(context, {
+            taskId: working.id,
+            phase: 'build',
+            taskIndex
           })
           break
         }
@@ -1182,6 +1342,13 @@ async function runBuild(context: BuildContext): Promise<void> {
             })
             return
           }
+          context.checkpoint.phase = 'review'
+          saveCheckpoint(context, {
+            taskId: working.id,
+            phase: 'review',
+            taskIndex,
+            reviewCycle
+          })
         } catch (error) {
           transition(context, working, 'blocked', {
             agentId: implementer.id,
@@ -1208,6 +1375,10 @@ async function runBuild(context: BuildContext): Promise<void> {
             type: 'blocked'
           })
         }
+        completedTaskIds.add(working.id)
+        context.checkpoint.completedTaskIds = [...completedTaskIds]
+        context.checkpoint.currentTaskId = null
+        saveCheckpoint(context, { taskId: working.id, phase: 'build', taskIndex })
       }
       if (budgetExceeded(context)) {
         finishBuild({
@@ -1227,6 +1398,10 @@ async function runBuild(context: BuildContext): Promise<void> {
     }
 
     setMeetingStatus({ meetingId: context.meetingId, status: 'reporting' })
+    context.checkpoint.phase = 'report'
+    context.checkpoint.reportStarted = true
+    context.checkpoint.currentTaskId = null
+    saveCheckpoint(context, { phase: 'report' })
     let reportSummary = ''
     try {
       const reportTurn = await runBuildTurn({
@@ -1298,7 +1473,11 @@ async function runBuild(context: BuildContext): Promise<void> {
   }
 }
 
-export function startBuildEngine(sender: WebContents, meetingId: string): MeetingSummary {
+export function startBuildEngine(
+  sender: WebContents,
+  meetingId: string,
+  options: { resume?: boolean } = {}
+): MeetingSummary {
   if (activeBuilds.has(meetingId)) {
     throw new AppError('MEETING_ACTIVE', 'This Build meeting is already running.')
   }
@@ -1306,11 +1485,34 @@ export function startBuildEngine(sender: WebContents, meetingId: string): Meetin
   if (meeting.mode !== 'build') {
     throw new AppError('MEETING_MODE_INVALID', 'This is not a Build meeting.')
   }
-  if (meeting.status !== 'draft' && !(meeting.status === 'stopped' && meeting.stopReason === 'paused')) {
+  const interrupted = ['building', 'reviewing', 'reporting'].includes(meeting.status)
+  if (
+    !options.resume &&
+    meeting.status !== 'draft' &&
+    !(meeting.status === 'stopped' && meeting.stopReason === 'paused')
+  ) {
     throw new AppError('MEETING_NOT_READY', 'This Build meeting has already run.')
+  }
+  if (
+    options.resume &&
+    !interrupted &&
+    !(meeting.status === 'stopped' && meeting.stopReason === 'paused')
+  ) {
+    throw new AppError('MEETING_NOT_INTERRUPTED', 'This Build meeting has nothing to resume.')
   }
   releaseAllActiveClaims(meetingId)
   clearMeetingFinalReport(meetingId)
+  const lease = resumableLease(meetingId)
+  const checkpoint =
+    options.resume
+      ? lease?.checkpoint ?? meetingCheckpoint(meetingId) ?? defaultCheckpoint()
+      : defaultCheckpoint()
+  const leaseId = lease?.id ?? createRunLease({
+    kind: 'build',
+    sessionId: meetingSessionId(meetingId),
+    meetingId,
+    checkpoint
+  })
   const controller = new AbortController()
   const active: ActiveBuild = {
     controller,
@@ -1330,9 +1532,11 @@ export function startBuildEngine(sender: WebContents, meetingId: string): Meetin
     usage: meeting.usage,
     plan: detail.plan,
     tasks: detail.tasks,
-    reviewResults: [],
+    reviewResults: [...checkpoint.reviewResults],
     processIds: new Set<string>(),
-    stopSignalReason: () => (active.stopReason ? active.stopReason : 'user')
+    stopSignalReason: () => (active.stopReason ? active.stopReason : 'user'),
+    leaseId,
+    checkpoint
   }
   void runBuild(context)
   return meetingSummary(meetingId)

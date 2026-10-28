@@ -5,6 +5,7 @@ import { APP_NAME } from '@shared/types'
 
 export type AppPaths = {
   appRoot: string
+  runtimeDir: string
   appDataDir: string
   logsDir: string
   cacheDir: string
@@ -38,6 +39,9 @@ export function initializeAppPaths(): AppPaths {
   }
 
   const appRoot = app.isPackaged ? path.dirname(process.execPath) : process.cwd()
+  const runtimeDir = app.isPackaged
+    ? path.join(process.resourcesPath, 'runtime')
+    : path.join(process.cwd(), 'build', 'runtime')
   const appDataDir = app.isPackaged
     ? path.join(appRoot, 'data')
     : path.join(process.cwd(), '.dev-data')
@@ -67,6 +71,7 @@ export function initializeAppPaths(): AppPaths {
 
   const paths: AppPaths = {
     appRoot,
+    runtimeDir,
     appDataDir,
     logsDir,
     cacheDir,

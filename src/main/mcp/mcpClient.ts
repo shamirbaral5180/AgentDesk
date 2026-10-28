@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import type { McpServerConfig } from '@shared/types'
 import { getAppPaths } from '../config/appPaths'
@@ -84,16 +85,37 @@ function stdioCommand(server: McpServerConfig): { command: string; args: string[
   const paths = getAppPaths()
   const rawCommand = server.command.trim()
   const useBundledNode = /^node(\.exe)?$/i.test(rawCommand)
-  const command = useBundledNode ? process.execPath : rawCommand
+  const npmMatch = /^(npm|npx)(\.cmd|\.exe)?$/i.exec(rawCommand)
+  const bundledNpmCli = npmMatch
+    ? path.join(
+        paths.runtimeDir,
+        'npm',
+        'bin',
+        npmMatch[1].toLowerCase() === 'npx' ? 'npx-cli.js' : 'npm-cli.js'
+      )
+    : null
+  const useBundledNpm = Boolean(bundledNpmCli && fs.existsSync(bundledNpmCli))
+  const command =
+    useBundledNode || useBundledNpm ? process.execPath : rawCommand
+  const args =
+    useBundledNpm && bundledNpmCli ? [bundledNpmCli, ...server.args] : server.args
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ...(useBundledNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+    ...(useBundledNode || useBundledNpm ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+    ...(useBundledNpm
+      ? {
+          npm_node_execpath: process.execPath,
+          npm_execpath: bundledNpmCli ?? '',
+          npm_config_cache: path.join(paths.mcpPackagesDir, 'npm-cache'),
+          npm_config_prefix: path.join(paths.mcpPackagesDir, 'npm-prefix')
+        }
+      : {}),
     ...secrets.env,
     MCP_TRANSPORT: 'stdio',
     npm_config_cache: path.join(paths.mcpPackagesDir, 'npm-cache'),
     npm_config_prefix: path.join(paths.mcpPackagesDir, 'npm-prefix')
   }
-  return { command, args: server.args, env }
+  return { command, args, env }
 }
 
 class StdioMcpConnection implements McpConnection {

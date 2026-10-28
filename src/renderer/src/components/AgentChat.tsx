@@ -459,12 +459,12 @@ export function AgentChat({
     }
   }
 
-  async function send(): Promise<void> {
+  async function send(override?: { text: string }): Promise<void> {
     if (sending || !modelReady) {
       return
     }
-    const text = draft.trim()
-    if (!text && pendingImages.length === 0) {
+    const text = override ? override.text : draft.trim()
+    if (!text && !override && pendingImages.length === 0) {
       return
     }
     setInlineError('')
@@ -474,7 +474,7 @@ export function AgentChat({
         sessionId: active?.session.id ?? null,
         agentId: agent.id,
         text,
-        attachmentIds: pendingImages.map((image) => image.id),
+        attachmentIds: override ? [] : pendingImages.map((image) => image.id),
         mode
       })
       if (!result.ok) {
@@ -492,6 +492,18 @@ export function AgentChat({
         error instanceof Error ? error.message : 'The message could not be sent.'
       )
     }
+  }
+
+  function retryMessage(message: ChatMessage): void {
+    const index = messages.findIndex((entry) => entry.id === message.id)
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const previous = messages[cursor]
+      if (previous.role === 'user' && previous.content.trim()) {
+        void send({ text: previous.content })
+        return
+      }
+    }
+    setInlineError('The interrupted request is not in this conversation. Send it again.')
   }
 
   async function stop(): Promise<void> {
@@ -686,6 +698,11 @@ export function AgentChat({
                 agent={agent}
                 streaming={sending && streamingMessageId === message.id}
                 onOpenContext={setContextMessage}
+                onRetry={
+                  message.metadata?.retryable || message.metadata?.interrupted
+                    ? retryMessage
+                    : undefined
+                }
               />
             ))}
             {sending && !streamingMessageId && (

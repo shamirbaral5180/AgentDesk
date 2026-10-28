@@ -1,6 +1,6 @@
 {
   "name": "agentdesk",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Portable multi-agent software studio",
   "main": "./out/main/index.js",
   "author": "AgentDesk",
@@ -19,6 +19,7 @@
     "smoke:phase6": "electron-vite build && electron . --phase6-smoke",
     "smoke:phase7": "electron-vite build && electron . --phase7-smoke",
     "smoke:phase8": "electron-vite build && electron . --phase8-smoke",
+    "smoke:phase9": "electron-vite build && electron . --phase9-smoke",
     "screenshot": "electron-vite build && electron . --screenshot=workspace",
     "screenshot:landing": "electron-vite build && electron . --screenshot=landing",
     "screenshot:providers": "electron-vite build && electron . --screenshot=providers",
@@ -33,11 +34,13 @@
     "screenshot:meeting": "electron-vite build && electron . --screenshot=meeting",
     "screenshot:build-room": "electron-vite build && electron . --screenshot=build-room",
     "screenshot:mcp": "electron-vite build && electron . --screenshot=mcp",
+    "screenshot:data": "electron-vite build && electron . --screenshot=data",
     "screenshot:changes": "electron-vite build && electron . --screenshot=changes",
     "screenshot:approval": "electron-vite build && electron . --screenshot=approval",
     "screenshot:project": "electron-vite build && electron . --screenshot=project",
-    "dist:dir": "npm run build && electron-builder --win dir --x64",
-    "dist:win": "npm run build && electron-builder --win zip --x64"
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "dist:dir": "npm run build && npm run prepare:runtime && electron-builder --win dir --x64",
+    "dist:win": "npm run build && npm run prepare:runtime && electron-builder --win zip --x64"
   },
   "devDependencies": {
     "@ai-sdk/google": "^4.0.106",
@@ -67,6 +70,15 @@
     "files": [
       "out/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "asar": true,
     "npmRebuild": false,

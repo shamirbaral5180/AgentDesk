@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { AppError } from '../errors'
 import { getCurrentProjectRoot } from '../project/projectService'
-import { ensureDir } from '../utils/fs'
+import { ensureDir, tryReadJsonFile, writeJsonAtomic } from '../utils/fs'
 
 const MAX_BUFFER_CHARS = 200_000
 
@@ -69,30 +69,23 @@ function logPathFor(processId: string): { absolute: string; relative: string } {
   }
 }
 
-function killTree(child: ChildProcess): void {
-  if (!child.pid) {
-    return
-  }
+function killPidTree(pid: number, fallback?: ChildProcess): void {
   if (process.platform === 'win32') {
     try {
-      const killer = spawn(
-        'taskkill',
-        ['/pid', String(child.pid), '/T', '/F'],
-        {
-          windowsHide: true,
-          stdio: 'ignore'
-        }
-      )
+      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
       killer.on('error', () => {
         try {
-          child.kill()
+          fallback?.kill()
         } catch {
           // The process may already be gone.
         }
       })
     } catch {
       try {
-        child.kill()
+        fallback?.kill()
       } catch {
         // The process may already be gone.
       }
@@ -100,10 +93,88 @@ function killTree(child: ChildProcess): void {
     return
   }
   try {
-    child.kill('SIGKILL')
+    fallback?.kill('SIGKILL')
   } catch {
     // The process may already be gone.
   }
+}
+
+function killTree(child: ChildProcess): void {
+  if (!child.pid) {
+    return
+  }
+  killPidTree(child.pid, child)
+}
+
+type PersistedProcess = {
+  processId: string
+  pid: number
+  command: string
+  startedAt: number
+}
+
+function processRegistryPath(): string | null {
+  const root = getCurrentProjectRoot()
+  return root ? path.join(root, '.agentdesk', 'tmp', 'processes.json') : null
+}
+
+function persistProcessRegistry(): void {
+  const registryPath = processRegistryPath()
+  if (!registryPath) {
+    return
+  }
+  const running: PersistedProcess[] = [...processes.values()]
+    .filter((entry) => entry.status === 'running' && entry.pid)
+    .map((entry) => ({
+      processId: entry.processId,
+      pid: entry.pid as number,
+      command: entry.command,
+      startedAt: entry.startedAt
+    }))
+  try {
+    ensureDir(path.dirname(registryPath))
+    writeJsonAtomic(registryPath, { processes: running })
+  } catch {
+    // Process cleanup is best effort; the command itself must keep running.
+  }
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+export function reconcileManagedProcesses(): number {
+  const registryPath = processRegistryPath()
+  if (!registryPath) {
+    return 0
+  }
+  const registry = tryReadJsonFile<{ processes?: PersistedProcess[] }>(registryPath)
+  if (!registry?.processes?.length) {
+    try {
+      fs.rmSync(registryPath, { force: true })
+    } catch {
+      // Ignore cleanup failures.
+    }
+    return 0
+  }
+  let killed = 0
+  for (const entry of registry.processes) {
+    if (Number.isInteger(entry.pid) && entry.pid > 0 && pidIsAlive(entry.pid)) {
+      killPidTree(entry.pid)
+      killed += 1
+    }
+  }
+  try {
+    fs.rmSync(registryPath, { force: true })
+  } catch {
+    // Ignore cleanup failures.
+  }
+  return killed
 }
 
 export function runCommand(input: {
@@ -162,6 +233,7 @@ export function runCommand(input: {
       child
     }
     processes.set(processId, entry)
+    persistProcessRegistry()
 
     const settle = (exitCode: number | null, failed = false): void => {
       if (settled) {
@@ -194,6 +266,7 @@ export function runCommand(input: {
       if (!entry.background) {
         processes.delete(processId)
       }
+      persistProcessRegistry()
       if (!resolved) {
         resolved = true
         resolve({
@@ -327,6 +400,7 @@ export function stopManagedProcess(processId: string): ProcessSummary {
     entry.status = 'stopped'
     entry.endedAt = Date.now()
   }
+  persistProcessRegistry()
   return {
     processId: entry.processId,
     pid: entry.pid,
@@ -351,5 +425,6 @@ export function killAllManagedProcesses(): void {
     }
   }
   processes.clear()
+  persistProcessRegistry()
 }
 

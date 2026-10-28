@@ -11,3 +11,4 @@ data/
 secrets.bin
 .DS_Store
 Thumbs.db
+build/runtime/

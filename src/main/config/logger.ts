@@ -73,6 +73,10 @@ function writeLog(level: LogLevel, scope: string, message: string, meta?: unknow
   }
 }
 
+export function redactForDisplay(value: unknown): unknown {
+  return redact(value)
+}
+
 export type Logger = {
   debug: (message: string, meta?: unknown) => void
   info: (message: string, meta?: unknown) => void

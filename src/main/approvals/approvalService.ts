@@ -10,7 +10,7 @@ import {
   type ApprovalScope,
   type ApprovalStatus
 } from '@shared/types'
-import { createLogger } from '../config/logger'
+import { createLogger, redactForDisplay } from '../config/logger'
 import { AppError } from '../errors'
 import { getCurrentProjectDatabase } from '../project/projectService'
 
@@ -26,6 +26,7 @@ type ApprovalInput = {
   risk: ApprovalRisk
   reason: string
   payload: Record<string, unknown>
+  neverGrant?: boolean
 }
 
 type PendingApproval = {
@@ -146,6 +147,7 @@ function insertApproval(
 ): ApprovalRequest {
   const id = randomUUID()
   const now = Date.now()
+  const safePayload = redactForDisplay(input.payload) as Record<string, unknown>
   database()
     .prepare(
       `INSERT INTO approvals
@@ -157,7 +159,7 @@ function insertApproval(
       id,
       input.agentId,
       input.actionType,
-      JSON.stringify(input.payload),
+      JSON.stringify(safePayload),
       input.risk,
       input.reason,
       status,
@@ -178,7 +180,7 @@ function insertApproval(
     actionKey: input.actionKey,
     risk: input.risk,
     reason: input.reason,
-    payload: input.payload,
+    payload: safePayload,
     status,
     scope: scope ?? undefined,
     createdAt: now,
@@ -190,7 +192,7 @@ export function requestApproval(
   sender: WebContents,
   input: ApprovalInput
 ): Promise<ApprovalResult> {
-  const grant = findGrant(input)
+  const grant = input.neverGrant ? null : findGrant(input)
   if (grant) {
     const auto = insertApproval(
       input,

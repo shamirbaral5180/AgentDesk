@@ -5,9 +5,15 @@ type UpdateBannerProps = {
   update: AppUpdateInfo
   onDismiss: () => void
   onDownload: () => void
+  onReleaseNotes: () => void
 }
 
-export function UpdateBanner({ update, onDismiss, onDownload }: UpdateBannerProps) {
+export function UpdateBanner({
+  update,
+  onDismiss,
+  onDownload,
+  onReleaseNotes
+}: UpdateBannerProps) {
   return (
     <div className="update-banner" role="status">
       <span className="update-banner-icon">
@@ -20,6 +26,9 @@ export function UpdateBanner({ update, onDismiss, onDownload }: UpdateBannerProp
         </span>
       </div>
       <div className="update-banner-actions">
+        <button className="btn btn-quiet btn-small" type="button" onClick={onReleaseNotes}>
+          Release notes
+        </button>
         <button className="btn btn-primary btn-small" type="button" onClick={onDownload}>
           <Icon name="arrow-down" size={13} />
           Download zip

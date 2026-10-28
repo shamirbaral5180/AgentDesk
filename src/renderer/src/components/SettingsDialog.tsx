@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState } from 'react'
-import type { AppInfo, AppSettings, ProjectInfo } from '@shared/types'
+import type { AppInfo, AppSettings, AppUpdateInfo, ProjectInfo } from '@shared/types'
 import { Brand } from './Brand'
 import { Icon } from './Icon'
 import { shortPath } from '../lib/format'
@@ -7,6 +7,7 @@ import { ProvidersPanel } from './settings/ProvidersPanel'
 import { TeamPanel } from './settings/TeamPanel'
 import { MemoryPanel } from './settings/MemoryPanel'
 import { McpPanel } from './settings/McpPanel'
+import { DataPanel } from './settings/DataPanel'
 
 type SettingsDialogProps = {
   open: boolean
@@ -40,6 +41,8 @@ export function SettingsDialog({
   const [tab, setTab] = useState<SettingsTab>('general')
   const [bossName, setBossName] = useState(settings.bossName)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [updateCheck, setUpdateCheck] = useState<AppUpdateInfo | null>(null)
+  const [updateBusy, setUpdateBusy] = useState(false)
 
   useEffect(() => {
     if (!open) {
@@ -77,6 +80,18 @@ export function SettingsDialog({
     setSaveState('saving')
     const saved = await onSaveBossName(bossName.trim())
     setSaveState(saved ? 'saved' : 'error')
+  }
+
+  async function checkUpdates(): Promise<void> {
+    setUpdateBusy(true)
+    try {
+      const result = await window.agentdesk.checkForUpdates()
+      if (result.ok) {
+        setUpdateCheck(result.data)
+      }
+    } finally {
+      setUpdateBusy(false)
+    }
   }
 
   return (
@@ -203,6 +218,82 @@ export function SettingsDialog({
 
               <section className="settings-section">
                 <div className="settings-section-heading">
+                  <h3>Onboarding checklist</h3>
+                  <span className="soft-chip">Next action</span>
+                </div>
+                <div className="onboarding-list">
+                  {[
+                    {
+                      done: settings.providers.length > 0,
+                      label: 'Add a provider',
+                      hint: 'Settings, Providers, then add OpenAI, Google, Ollama, or a custom endpoint.'
+                    },
+                    {
+                      done: settings.models.length > 0,
+                      label: 'Discover or add a model',
+                      hint: 'Use Discover on a provider, or add a model manually.'
+                    },
+                    {
+                      done: Boolean(project?.agents.some((agent) => agent.model)),
+                      label: 'Assign models to the team',
+                      hint: 'Settings, Team, Configure each agent and assign a model.'
+                    },
+                    {
+                      done: Boolean(project),
+                      label: 'Open a project',
+                      hint: 'Open a repository folder so the team has a workspace.'
+                    },
+                    {
+                      done: Boolean(project),
+                      label: 'Run the Plan room',
+                      hint: 'Choose Plan room, describe the goal, select the team, and start.'
+                    },
+                    {
+                      done: Boolean(project),
+                      label: 'Run the Build room',
+                      hint: 'Approve a completed Plan, then start a Build meeting.'
+                    },
+                    {
+                      done: false,
+                      label: 'Connect MCP (optional)',
+                      hint: 'Settings, MCP, add a server, then enable it for the project.'
+                    }
+                  ].map((step) => (
+                    <div className="onboarding-row" key={step.label}>
+                      <span className={step.done ? 'onboarding-check done' : 'onboarding-check'}>
+                        {step.done ? <Icon name="check" size={13} /> : null}
+                      </span>
+                      <div>
+                        <strong>{step.label}</strong>
+                        <span>{step.hint}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {settings.recovery && (
+                <section className="settings-section">
+                  <div className="settings-section-heading">
+                    <h3>Recovered from backup</h3>
+                    <span className="soft-chip warning">Recovery</span>
+                  </div>
+                  <p className="field-hint">
+                    {new Date(settings.recovery.recoveredAt).toLocaleString()}
+                  </p>
+                  <ul className="recovery-note-list">
+                    {settings.recovery.notes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                  {settings.recovery.backupPaths.length > 0 && (
+                    <p className="field-hint">Backups: {settings.recovery.backupPaths.join(', ')}</p>
+                  )}
+                </section>
+              )}
+
+              <section className="settings-section">
+                <div className="settings-section-heading">
                   <h3>Workspace</h3>
                   <span className="phase-badge">Local-first</span>
                 </div>
@@ -249,6 +340,11 @@ export function SettingsDialog({
 
           {tab === 'data' && (
             <div className="settings-stack">
+              <DataPanel
+                project={project}
+                settings={settings}
+                onSettingsChanged={onSettingsChanged}
+              />
               <section className="settings-section">
                 <div className="settings-section-heading">
                   <h3>App folder</h3>
@@ -256,6 +352,7 @@ export function SettingsDialog({
                 </div>
                 <PathRow label="Data folder" value={appInfo.dataDir} onReveal={onRevealData} disabled={disabled} />
                 <PathRow label="Settings file" value={appInfo.settingsPath} onReveal={onRevealData} disabled={disabled} />
+                <PathRow label="Logs" value={appInfo.logsDir} onReveal={onRevealData} disabled={disabled} />
                 <PathRow label="MCP catalog" value={appInfo.mcpDir} onReveal={onRevealData} disabled={disabled} />
               </section>
 
@@ -330,6 +427,65 @@ export function SettingsDialog({
                     <strong>None</strong>
                   </div>
                 </div>
+              </section>
+
+              <section className="settings-section">
+                <div className="settings-section-heading">
+                  <h3>Updates</h3>
+                  <span className="soft-chip">
+                    {settings.updates.lastCheckedAt
+                      ? `Checked ${new Date(settings.updates.lastCheckedAt).toLocaleString()}`
+                      : 'Not checked yet'}
+                  </span>
+                </div>
+                <p className="field-hint">
+                  Only the portable zip is downloaded. AgentDesk checks the GitHub latest release.
+                </p>
+                <div className="field-actions">
+                  <button
+                    className="btn btn-quiet btn-small"
+                    type="button"
+                    onClick={() => void checkUpdates()}
+                    disabled={updateBusy}
+                  >
+                    {updateBusy ? 'Checking...' : 'Check now'}
+                  </button>
+                  {updateCheck && (
+                    <span className="inline-status">
+                      {updateCheck.error
+                        ? `Check failed: ${updateCheck.error}`
+                        : updateCheck.available
+                          ? `${updateCheck.latestVersion} is available`
+                          : 'You are on the latest version'}
+                    </span>
+                  )}
+                </div>
+                {updateCheck?.available && (
+                  <div className="field-actions">
+                    <button
+                      className="btn btn-primary btn-small"
+                      type="button"
+                      onClick={() => {
+                        if (updateCheck.releaseUrl) {
+                          void window.agentdesk.openUpdateDownload(updateCheck.releaseUrl)
+                        }
+                      }}
+                    >
+                      Release notes
+                    </button>
+                    <button
+                      className="btn btn-quiet btn-small"
+                      type="button"
+                      onClick={() => {
+                        if (updateCheck.downloadUrl) {
+                          void window.agentdesk.openUpdateDownload(updateCheck.downloadUrl)
+                        }
+                      }}
+                    >
+                      Download zip
+                    </button>
+                  </div>
+                )}
               </section>
             </div>
           )}

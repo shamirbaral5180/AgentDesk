@@ -19,8 +19,18 @@ import {
   type ChatSessionSummary,
   type ChatMode,
   type ChangeRecord,
+  type DataStats,
+  type DiagnosticsBundle,
   type DiscoveryResult,
+  type ExportRequest,
+  type ExportResult,
   type IpcResult,
+  type MaintenanceResult,
+  type RecoveryReport,
+  type ResetRequest,
+  type ResetResult,
+  type SettingsPreferencesPatch,
+  type UsageSummary,
   type MemoryBundle,
   type MemoryEntry,
   type MemoryPinInput,
@@ -65,6 +75,10 @@ const api: AgentDeskApi = {
     ipcRenderer.invoke(IPC_CHANNELS.settingsGet) as Promise<IpcResult<AppSettings>>,
   updateSettings: (patch: SettingsPatch) =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsUpdate, patch) as Promise<
+      IpcResult<AppSettings>
+    >,
+  updateSettingsPreferences: (patch: SettingsPreferencesPatch) =>
+    ipcRenderer.invoke(IPC_CHANNELS.settingsPreferences, patch) as Promise<
       IpcResult<AppSettings>
     >,
   pickProject: () =>
@@ -255,6 +269,14 @@ const api: AgentDeskApi = {
     ipcRenderer.invoke(IPC_CHANNELS.meetingApprovePlan, { meetingId }) as Promise<
       IpcResult<MeetingDetail>
     >,
+  resumeMeeting: (meetingId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.meetingResume, { meetingId }) as Promise<
+      IpcResult<MeetingSummary>
+    >,
+  markMeetingStopped: (meetingId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.meetingMarkStopped, { meetingId }) as Promise<
+      IpcResult<MeetingSummary>
+    >,
   listMcpServers: () =>
     ipcRenderer.invoke(IPC_CHANNELS.mcpList) as Promise<IpcResult<McpServerView[]>>,
   addMcpServer: (draft: McpServerDraft) =>
@@ -286,6 +308,40 @@ const api: AgentDeskApi = {
     ipcRenderer.invoke(IPC_CHANNELS.updateCheck) as Promise<IpcResult<AppUpdateInfo>>,
   openUpdateDownload: (url: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.updateOpen, { url }) as Promise<IpcResult<null>>,
+  dismissUpdate: (version: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.updateDismiss, { version }) as Promise<
+      IpcResult<AppSettings>
+    >,
+  getRecoveryReport: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.recoveryReport) as Promise<IpcResult<RecoveryReport>>,
+  markRecoveryStopped: (meetingId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.recoveryMarkStopped, { meetingId }) as Promise<
+      IpcResult<RecoveryReport>
+    >,
+  getDataStats: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataStats) as Promise<IpcResult<DataStats>>,
+  backupData: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataBackup) as Promise<IpcResult<MaintenanceResult>>,
+  restoreData: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataRestore) as Promise<IpcResult<MaintenanceResult>>,
+  pruneData: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataPrune) as Promise<IpcResult<MaintenanceResult>>,
+  vacuumData: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataVacuum) as Promise<IpcResult<MaintenanceResult>>,
+  exportData: (request: ExportRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataExport, request) as Promise<
+      IpcResult<ExportResult | null>
+    >,
+  resetData: (request: ResetRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.dataReset, request) as Promise<IpcResult<ResetResult>>,
+  getDiagnostics: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.diagnosticsGet) as Promise<IpcResult<DiagnosticsBundle>>,
+  exportDiagnostics: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.diagnosticsExport) as Promise<
+      IpcResult<ExportResult | null>
+    >,
+  getUsageSummary: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.usageSummary) as Promise<IpcResult<UsageSummary>>,
   onUpdateEvent: (listener: (event: AppUpdateInfo) => void) => {
     const handler = (_event: IpcRendererEvent, event: AppUpdateInfo): void => {
       listener(event)

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
-import { IPC_CHANNELS, type AppUpdateInfo } from '@shared/types'
+import { IPC_CHANNELS, type AppSettings, type AppUpdateInfo } from '@shared/types'
 import { createLogger } from '../config/logger'
+import { loadSettings, updateSettingsPreferences } from '../config/settings'
 import { AppError } from '../errors'
 
 const log = createLogger('updates')
@@ -75,9 +76,11 @@ export async function checkForUpdates(force = false): Promise<AppUpdateInfo> {
           releaseUrl: null,
           downloadUrl: null,
           publishedAt: null,
+          releaseNotes: null,
           checkedAt
         }
         lastCheckedAt = checkedAt
+        persistCheckedAt(checkedAt)
         return lastUpdate
       }
       if (!response.ok) {
@@ -86,6 +89,7 @@ export async function checkForUpdates(force = false): Promise<AppUpdateInfo> {
       const release = (await response.json()) as {
         tag_name?: string
         name?: string
+        body?: string
         html_url?: string
         published_at?: string
         assets?: Array<{ name?: string; browser_download_url?: string }>
@@ -105,16 +109,21 @@ export async function checkForUpdates(force = false): Promise<AppUpdateInfo> {
         releaseUrl: release.html_url ?? null,
         downloadUrl: zip?.browser_download_url ?? null,
         publishedAt: release.published_at ?? null,
+        releaseNotes: release.body ? release.body.slice(0, 8_000) : null,
         checkedAt
       }
       lastCheckedAt = checkedAt
+      persistCheckedAt(checkedAt)
       if (available) {
         log.info('New AgentDesk release available', {
           currentVersion,
           latestVersion,
           downloadUrl: lastUpdate.downloadUrl
         })
-        broadcast(lastUpdate)
+        const dismissed = loadSettings().updates.dismissedVersion
+        if (dismissed !== latestVersion) {
+          broadcast(lastUpdate)
+        }
       }
       return lastUpdate
     } catch (error) {
@@ -128,10 +137,12 @@ export async function checkForUpdates(force = false): Promise<AppUpdateInfo> {
         releaseUrl: null,
         downloadUrl: null,
         publishedAt: null,
+        releaseNotes: null,
         checkedAt,
         error: message
       }
       lastCheckedAt = checkedAt
+      persistCheckedAt(checkedAt)
       return lastUpdate
     } finally {
       checkPromise = null
@@ -140,9 +151,26 @@ export async function checkForUpdates(force = false): Promise<AppUpdateInfo> {
   return checkPromise
 }
 
+function persistCheckedAt(checkedAt: number): void {
+  try {
+    updateSettingsPreferences({ updates: { lastCheckedAt: checkedAt } })
+  } catch (error) {
+    log.warn('Could not persist the update check time', { error })
+  }
+}
+
+export function dismissUpdate(version: string): AppSettings {
+  const settings = updateSettingsPreferences({
+    updates: { dismissedVersion: version }
+  })
+  log.info('Update notification dismissed', { version })
+  return settings
+}
+
 export async function openUpdateDownload(url: string): Promise<void> {
   const allowed =
     lastUpdate?.downloadUrl === url ||
+    lastUpdate?.releaseUrl === url ||
     (url.startsWith(RELEASE_PREFIX) && url.toLowerCase().endsWith('.zip'))
   if (!allowed) {
     throw new AppError(

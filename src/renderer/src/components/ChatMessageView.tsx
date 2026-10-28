@@ -8,6 +8,7 @@ type ChatMessageViewProps = {
   agent: AgentSummary
   streaming: boolean
   onOpenContext: (message: ChatMessage) => void
+  onRetry?: (message: ChatMessage) => void
 }
 
 function initials(name: string): string {
@@ -49,7 +50,8 @@ export function ChatMessageView({
   message,
   agent,
   streaming,
-  onOpenContext
+  onOpenContext,
+  onRetry
 }: ChatMessageViewProps) {
   const isUser = message.role === 'user'
   const toolCalls = message.metadata?.toolCalls ?? []
@@ -175,7 +177,35 @@ export function ChatMessageView({
         {message.metadata?.status === 'error' && message.metadata.error && (
           <div className="message-error">
             <Icon name="alert" size={14} />
-            {message.metadata.error}
+            <span>{message.metadata.error}</span>
+            {message.metadata.retryable && onRetry && (
+              <button
+                className="btn btn-quiet btn-small"
+                type="button"
+                onClick={() => onRetry(message)}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+
+        {message.metadata?.status === 'interrupted' && (
+          <div className="message-error interrupted">
+            <Icon name="alert" size={14} />
+            <span>
+              {message.metadata.error ??
+                'This response was interrupted when AgentDesk stopped. Retry manually.'}
+            </span>
+            {onRetry && (
+              <button
+                className="btn btn-quiet btn-small"
+                type="button"
+                onClick={() => onRetry(message)}
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
 

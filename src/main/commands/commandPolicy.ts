@@ -33,7 +33,16 @@ const HIGH_RISK_PATTERNS: Array<[RegExp, string]> = [
   [/\b(powershell|pwsh)\b.*(-enc|-encodedcommand|-executionpolicy\s+bypass)/i, 'This command uses an obfuscated or unrestricted shell.'],
   [/\b(node|python|python3|ruby|perl)\b.*\s(-e|-c)\b/i, 'This command executes inline code and may modify anything.'],
   [/\b(sudo|runas)\b/i, 'This command requests elevated privileges.'],
-  [/\b(scp|ssh|rsync)\b/i, 'This command can transfer files to another machine.']
+  [/\b(scp|ssh|rsync)\b/i, 'This command can transfer files to another machine.'],
+  [/\b(cmd(\.exe)?\s+\/[ck]|powershell(\.exe)?\b.*\s-(c|command|enc|encodedcommand))\b/i, 'This command launches a nested or encoded shell.'],
+  [/\b(bash|sh|zsh|fish|pwsh)\s+-(c|e|command)\b/i, 'This command launches a nested shell.'],
+  [/\b(npx|npm\s+(exec|x)|pnpm\s+(dlx|exec)|yarn\s+(dlx|exec)|bunx)\b/i, 'This command runs a downloaded or remote package.'],
+  [/\bgit\s+(-c|config|--exec-path|--upload-pack)\b/i, 'This command can change or override git execution behavior.'],
+  [/\b(curl|wget|iwr|Invoke-WebRequest)\b[\s\S]*\|\s*(sh|bash|zsh|powershell|pwsh|cmd)\b/i, 'This command pipes downloaded content into a shell.'],
+  [/\b(setx?|export|PATH\s*=|\$env:)\b/i, 'This command changes environment variables for the process tree.'],
+  [/\b(start-process|start\s+\/b|nohup|schtasks|wmic\s+process\s+call\s+create)\b/i, 'This command starts a detached or scheduled process.'],
+  [/(^|[\s;])&\s*$|\bstart\s+["']?[^"' ]+/i, 'This command may run a background or detached process.'],
+  [/\b(taskkill|tskill|killall|pkill)\b/i, 'This command terminates processes and may affect the host.']
 ]
 
 const PATH_ESCAPE_PATTERN = /(^|[\s"'`=;|&])\.\.([\\/]|$)/

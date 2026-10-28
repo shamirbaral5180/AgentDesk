@@ -298,7 +298,7 @@ export function ProjectOverview({
             Open settings
           </button>
         )}
-        <span className="phase-badge">Phase 5</span>
+        <span className="phase-badge">Phase 9</span>
       </section>
     </>
   )
