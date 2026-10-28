@@ -30,8 +30,8 @@ Final hardening and portable release.
 ## Artifact
 
 - File: `AgentDesk-0.9.0-x64.zip`
-- Size: 157,848,276 bytes
-- SHA-256: `9A5FB5987BEA52CC21F6FDD6B785C14078664060F01B30E060D2A570FFB81BE3`
+- Size: 157,848,361 bytes
+- SHA-256: `624BE8C1F2C181578254AADBCFC35CEBFEAC4E600FD5934B1571D8D1C69441A6`
 
 ## Review refinements
 
@@ -40,6 +40,9 @@ Final hardening and portable release.
 - Ollama is local-only; cloud endpoints use Custom. Non-custom provider names are fixed.
 - Team empty state explains per-project initialization and default system prompts.
 - MCP settings include stdio, Streamable HTTP, and SSE example presets.
+- Chat is one shared team room: everyone sees the transcript and the selected agent replies.
+- Plan/Build mode switching lives in the composer; the top-bar mode switch was removed.
+- Typing `/plan` or `/build` in the composer switches modes.
 
 ## Upgrade notes
 
