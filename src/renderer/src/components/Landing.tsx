@@ -52,8 +52,13 @@ function foundationFor(settings: AppSettings) {
     },
     {
       title: 'Team meetings and orchestration',
-      detail: 'Phase 6-7: free-form agent discussion, task execution, QA, and approvals.',
-      ready: false
+      detail: 'Plan room, Build room, file claims, QA review, pauses, interrupts, and approvals.',
+      ready: hasModels
+    },
+    {
+      title: 'MCP and external tools',
+      detail: 'Global catalog, project policies, stdio/HTTP/SSE, approvals, logs, and audit.',
+      ready: true
     }
   ]
 }
@@ -137,7 +142,7 @@ export function Landing({
                 <span className="eyebrow">Build status</span>
                 <h2>Foundation</h2>
               </div>
-              <span className="phase-badge">Phase 5</span>
+              <span className="phase-badge">Phase 8</span>
             </div>
             <div className="foundation-list">
               {foundation.map((item) => (
@@ -154,7 +159,7 @@ export function Landing({
             </div>
             <div className="foundation-foot">
               <Icon name="sparkles" size={16} />
-              <span>Project storage, a guarded build loop, and cross-session memory are runnable now.</span>
+              <span>Plan room, Build room, guarded builds, memory, and MCP are runnable now.</span>
             </div>
           </aside>
         </section>
