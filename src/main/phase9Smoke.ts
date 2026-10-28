@@ -309,6 +309,11 @@ function pathAndCommandSecurityTest(projectRoot: string): void {
   expectsThrow(() => resolveWritableProjectPath(projectRoot, 'node_modules/x.js'), 'Protected dir')
   expectsThrow(() => resolveWritableProjectPath(projectRoot, '.env'), 'Sensitive file')
   assert(matchesAnyGlob('src/deep/file.ts', ['src/**']), 'Glob overlap failed for a nested path')
+  const generatedPath = resolveWritableProjectPath(projectRoot, '/src/generated.ts')
+  assert(
+    generatedPath.relative === 'src/generated.ts',
+    'A leading-slash generated path was not normalized into the project'
+  )
 
   const commands = [
     'cmd /c whoami',

@@ -139,7 +139,8 @@ export function compileChatPrompt(input: {
             'Writes outside your role scope, destructive commands, installs, downloads, deploys,',
             'git pushes, inline code execution, and paths outside the project require Boss approval.',
             'Never access credential files or AgentDesk secrets. Run relevant tests after code changes.',
-            'Cite repository paths you actually inspected or changed.'
+            'Use write_file or patch_file for every change. Do not paste full source files into the chat.',
+            'Use project-relative paths without a leading slash. Cite paths you actually changed.'
           ].join('\n')
         : [
             'You can inspect the repository with these read-only tools:',
@@ -600,7 +601,10 @@ export function compileBuildPrompt(input: {
         ...toolNames.map((name) => `- ${name}`),
         '',
         'Every write must stay inside the active task claim. Prefer patch_file over whole-file rewrites.',
-        'Read the file before editing. Run relevant tests after changes. Cite the paths you actually touched.'
+        'Use write_file or patch_file for every change. Do not paste full source files into the chat.',
+        'Use project-relative paths without a leading slash, for example src/app.ts not /src/app.ts.',
+        'Create new files and folders inside the opened project root. Run relevant tests after changes.',
+        'Read the file before editing. Cite the paths you actually touched.'
       ].join('\n')
     : [
         'No repository tools are available for this turn.',

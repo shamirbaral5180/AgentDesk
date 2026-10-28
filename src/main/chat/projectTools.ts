@@ -100,7 +100,11 @@ export type AgentToolBundle = {
 }
 
 function normalizeRelative(input: string): string {
-  return normalizeRelativePath(input)
+  const normalized = normalizeRelativePath(input)
+  if (normalized.startsWith('/') && !normalized.startsWith('//')) {
+    return normalized.replace(/^\/+/, '')
+  }
+  return normalized
 }
 
 function assertUsableRelative(relativePath: string): string {

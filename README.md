@@ -60,6 +60,7 @@ Only the portable `.zip` is attached to GitHub releases. AgentDesk checks the la
 
 - [User guide](docs/USER_GUIDE.md)
 - [Upgrade notes v0.8.0 to v0.9.0](docs/UPGRADE-0.9.0.md)
+- [Release notes v0.10.0](RELEASE_NOTES-0.10.0.md)
 - [Release notes v0.9.0](RELEASE_NOTES-0.9.0.md)
 
 ## Repository layout

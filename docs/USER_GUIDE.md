@@ -31,7 +31,17 @@ The default team has six editable agents: Coordinator, Frontend, Backend, Databa
 
 Each agent can be assigned a different model and temperature. Plan mode only offers read-only tools. Build mode offers write, patch, move, delete, and command tools subject to role scope and approvals.
 
-## 4. Plan room
+## 4. Project desk
+
+The Project desk is the single workspace for planning and building. It has three panes:
+
+- Left: project files and the team roster with live statuses.
+- Middle: the Boss-to-Coordinator chat. Only the Coordinator answers you.
+- Right: agent-to-agent discussion, tasks, and active file claims.
+
+The composer has only Plan and Build. Plan mode is read-only. Build mode can create, edit, and test files inside the opened project folder. `.agentdesk` only stores memory, tasks, snapshots, and state; the app being built lives in the project folder itself.
+
+## 5. Plan room
 
 1. Choose Plan room.
 2. Describe the goal.

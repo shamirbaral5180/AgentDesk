@@ -79,7 +79,10 @@ export function matchesAnyGlob(relativePath: string, globs: string[]): boolean {
 }
 
 function assertNotProtected(relativePath: string): string {
-  const relative = normalizeRelativePath(relativePath)
+  let relative = normalizeRelativePath(relativePath)
+  if (relative.startsWith('/') && !relative.startsWith('//')) {
+    relative = relative.replace(/^\/+/, '')
+  }
   if (!relative) {
     throw new AppError('INVALID_PATH', 'A file path is required.')
   }

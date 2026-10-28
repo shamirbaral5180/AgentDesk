@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import path from 'node:path'
 import type { WebContents } from 'electron'
 import {
   stepCountIs,
@@ -43,7 +44,14 @@ import {
   requestApproval as requestBossApproval,
   cancelApprovalsForSession
 } from '../approvals/approvalService'
-import { listChanges } from '../changes/changeService'
+import {
+  hashBuffer,
+  listChanges,
+  recordChange,
+  snapshotFile
+} from '../changes/changeService'
+import { ensureDir, writeFileAtomic } from '../utils/fs'
+import { resolveWritableProjectPath } from '../chat/pathPolicy'
 import { stopManagedProcess } from '../commands/commandRunner'
 import {
   createRunLease,
@@ -323,6 +331,88 @@ function reviewResult(text: string): ReviewResult {
   }
 }
 
+const FILE_BLOCK_PATTERN =
+  /(?:^|\n)\s*(?:\*\*)?File(?:\*\*)?\s*:\s*`?([^\n`]+?)`?\s*\n```[^\n]*\n([\s\S]*?)```/g
+
+function persistFilesFromResponse(input: {
+  sessionId: string
+  meetingId: string
+  taskId: string | null
+  turnId: string
+  agentId: string
+  text: string
+}): number {
+  const root = getCurrentProjectRoot()
+  if (!root) {
+    return 0
+  }
+  const blocks: Array<{ filePath: string; content: string }> = []
+  FILE_BLOCK_PATTERN.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = FILE_BLOCK_PATTERN.exec(input.text)) !== null) {
+    const filePath = match[1].trim().replace(/^["'`]+|["'`]+$/g, '')
+    const content = match[2]
+    if (filePath && content.trim()) {
+      blocks.push({ filePath, content })
+    }
+  }
+  let written = 0
+  for (const block of blocks) {
+    try {
+      const { relative, absolute } = resolveWritableProjectPath(root, block.filePath)
+      if (input.taskId) {
+        assertTaskWriteAllowed({
+          meetingId: input.meetingId,
+          agentId: input.agentId,
+          relativePath: relative
+        })
+      }
+      const content = block.content.endsWith('\n') ? block.content : `${block.content}\n`
+      const snapshot = snapshotFile(
+        input.sessionId,
+        relative,
+        `before recovered response ${input.taskId ?? input.turnId}`
+      )
+      ensureDir(path.dirname(absolute))
+      writeFileAtomic(absolute, content)
+      recordChange({
+        sessionId: input.sessionId,
+        meetingId: input.meetingId,
+        taskId: input.taskId ?? undefined,
+        turnId: input.turnId,
+        agentId: input.agentId,
+        type: 'write',
+        path: relative,
+        beforeHash: snapshot.objectHash,
+        afterHash: hashBuffer(Buffer.from(content, 'utf8')),
+        snapshotId: snapshot.id,
+        metadata: { source: 'agent_response_file_block' }
+      })
+      written += 1
+    } catch (error) {
+      log.warn('Could not persist a file block from the agent response', {
+        meetingId: input.meetingId,
+        taskId: input.taskId,
+        filePath: block.filePath,
+        error
+      })
+    }
+  }
+  if (written > 0) {
+    appendMeetingMessage({
+      meetingId: input.meetingId,
+      senderType: 'system',
+      senderAgentId: null,
+      senderName: 'System',
+      targetAgentId: null,
+      kind: 'recovery',
+      content: `Recovered ${written} file${written === 1 ? '' : 's'} from the agent response because it described files without calling a write tool. QA will review the result.`,
+      metadata: { phase: 'build', round: 1, status: 'done' }
+    })
+  }
+  return written
+}
+
 function toolBundleFor(input: {
   agent: AgentConfig
   root: string
@@ -515,7 +605,12 @@ async function runBuildTurn(input: {
       model: createLanguageModel(provider, model),
       system: prompt.system,
       messages: [{ role: 'user', content: userText }],
-      maxOutputTokens: phase === 'report' ? 2_500 : phase === 'review' ? 1_500 : 4_000,
+      maxOutputTokens:
+        phase === 'report'
+          ? Math.min(model.maxOutputTokens ?? 4_000, 4_000)
+          : phase === 'review'
+            ? Math.min(model.maxOutputTokens ?? 3_000, 3_000)
+            : Math.min(model.maxOutputTokens ?? 16_000, 16_000),
       temperature: Math.min(Math.max(agent.model?.temperature ?? 0.2, 0), 2),
       maxRetries: 0,
       timeout: 180_000,
@@ -592,6 +687,21 @@ async function runBuildTurn(input: {
 
     const durationMs = Date.now() - startedAt
     const content = fullText.trim() || (context.controller.signal.aborted ? 'Stopped.' : 'No response.')
+    const usedWriteTool = toolTraces.some(
+      (trace) =>
+        trace.status === 'done' &&
+        ['write_file', 'patch_file', 'delete_path', 'move_path'].includes(trace.toolName)
+    )
+    if (phase === 'build' && !context.controller.signal.aborted && !usedWriteTool) {
+      persistFilesFromResponse({
+        sessionId: context.sessionId,
+        meetingId: context.meetingId,
+        taskId: task?.id ?? null,
+        turnId,
+        agentId: agent.id,
+        text: content
+      })
+    }
     const message = updateMeetingMessage({
       messageId: streaming.id,
       content,
