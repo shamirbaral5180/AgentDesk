@@ -8239,3 +8239,45 @@ textarea:focus-visible {
   font-size: 8px;
   text-align: center;
 }
+
+.desk-agent-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.desk-agent-activity:last-child {
+  border-bottom: 0;
+}
+
+.desk-agent-activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.desk-agent-activity-head strong {
+  font-size: 9px;
+  color: var(--text-soft);
+}
+
+.desk-agent-activity-task,
+.desk-agent-activity-tool {
+  font-size: 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.desk-agent-activity-tool {
+  color: var(--muted-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.desk-agent-activity-blocker {
+  font-size: 8px;
+  color: #fbbf24;
+  line-height: 1.5;
+}

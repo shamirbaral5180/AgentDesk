@@ -257,6 +257,17 @@ export async function runPhase10Smoke(): Promise<number> {
     if (detail.todos.length === 0) {
       throw new Error('Agents did not persist personal todos')
     }
+    if (detail.messages.filter((message) => message.kind === 'status').length < 2) {
+      throw new Error('The Coordinator did not report progress to the Boss')
+    }
+    const rawStructured = detail.messages.filter(
+      (message) =>
+        ['plan', 'intake', 'build', 'review'].includes(message.kind) &&
+        /^\s*[{[]/.test(message.content.trim())
+    )
+    if (rawStructured.length > 0) {
+      throw new Error(`Structured JSON leaked into chat: ${rawStructured.map((m) => m.kind).join(', ')}`)
+    }
     if (!mock.sawRequest || mock.maxConcurrentBuilds < 3) {
       throw new Error(
         `Expected at least 3 parallel build turns and a request; saw ${mock.maxConcurrentBuilds} and request=${mock.sawRequest}`

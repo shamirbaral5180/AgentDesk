@@ -81,6 +81,25 @@ function mergeTask(detail: MeetingDetail, task: MeetingTask): MeetingDetail {
   }
 }
 
+function cleanChatText(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    let structured = false
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      structured = typeof parsed === 'object' && parsed !== null
+    } catch {
+      structured = /"(understanding|concerns|summary|tasks|status|issues)"\s*:/.test(trimmed)
+    }
+    if (structured) {
+      return 'Structured details hidden from chat. See the plan card, task board, and live activity for the English summary.'
+    }
+  }
+  return text.replace(/```[\s\S]*?```/g, (block) =>
+    block.length > 700 ? '\n[code omitted from chat - see the project files]\n' : block
+  )
+}
+
 function initials(name: string): string {
   return name
     .split(' ')
@@ -905,7 +924,7 @@ export function ProjectDesk({
                       </span>
                     </div>
                     <div className="desk-message-body">
-                      <MessageText content={message.content} />
+                      <MessageText content={cleanChatText(message.content)} />
                     </div>
                   </article>
                 ))
@@ -1025,6 +1044,68 @@ export function ProjectDesk({
                   <p className="desk-goal">{detail.meeting.goal.slice(0, 220)}</p>
                 </div>
               )}
+              {detail && (
+                <div className="desk-task-section">
+                  <span className="desk-activity-label">Live agent activity</span>
+                  {project.agents
+                    .filter((agent) => agent.enabled)
+                    .map((agent) => {
+                      const status = agentStatus(agent, detail)
+                      const tasks = detail.tasks.filter(
+                        (task) => task.assigneeAgentId === agent.id
+                      )
+                      const current =
+                        tasks.find((task) =>
+                          ['in_progress', 'review', 'changes_requested', 'waiting'].includes(
+                            task.status
+                          )
+                        ) ??
+                        tasks.find((task) => task.status === 'blocked') ??
+                        null
+                      const messages = detail.messages.filter(
+                        (message) => message.senderAgentId === agent.id
+                      )
+                      const latest = messages[messages.length - 1]
+                      const traces = latest?.metadata?.toolCalls ?? []
+                      const trace = traces[traces.length - 1]
+                      const latestEvent = current
+                        ? [...detail.activity]
+                            .reverse()
+                            .find((event) => event.taskId === current.id)
+                        : null
+                      return (
+                        <div className="desk-agent-activity" key={agent.id}>
+                          <div className="desk-agent-activity-head">
+                            <strong>{agent.name}</strong>
+                            <span className={`desk-status ${status.tone}`}>{status.label}</span>
+                          </div>
+                          {current && (
+                            <span className="desk-agent-activity-task">
+                              {taskStatusLabel(current.status)}: {current.title}
+                              {current.waitingOnTaskIds.length > 0
+                                ? ` - waiting on ${current.waitingOnTaskIds.length} task`
+                                : ''}
+                            </span>
+                          )}
+                          {trace && (
+                            <span className="desk-agent-activity-tool">
+                              {trace.status === 'running' ? 'Running' : 'Last tool'}:{' '}
+                              {trace.toolName}
+                            </span>
+                          )}
+                          {current &&
+                            (current.status === 'blocked' || current.status === 'waiting') &&
+                            latestEvent?.note && (
+                              <span className="desk-agent-activity-blocker">
+                                {latestEvent.note}
+                              </span>
+                            )}
+                        </div>
+                      )
+                    })}
+                </div>
+              )}
+
               {teamMessages.length === 0 ? (
                 <div className="desk-empty small">
                   Agent-to-agent updates appear here once the team starts working.
@@ -1058,7 +1139,7 @@ export function ProjectDesk({
                         </span>
                       </div>
                       <div className="desk-message-body small">
-                        <MessageText content={message.content} />
+                        <MessageText content={cleanChatText(message.content)} />
                       </div>
                     </article>
                   )

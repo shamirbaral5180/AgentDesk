@@ -366,6 +366,25 @@ function reviewResult(text: string): ReviewResult {
   }
 }
 
+function reviewChatText(review: ReviewResult): string {
+  const lines = [
+    review.status === 'approved'
+      ? 'Review approved.'
+      : 'Changes requested after review.',
+    review.summary
+  ]
+  if (review.issues.length > 0) {
+    lines.push('', 'What needs fixing:')
+    for (const issue of review.issues) {
+      lines.push(`- ${issue}`)
+    }
+  }
+  if (review.testsRun.length > 0) {
+    lines.push('', `Checks: ${review.testsRun.join('; ')} (${review.testsPassed ? 'passed' : 'failed'})`)
+  }
+  return lines.join('\n')
+}
+
 const FILE_BLOCK_PATTERN =
   /(?:^|\n)[ \t]*(?:#{1,6}[ \t]*|\/\/[ \t]*|<!--[ \t]*)?(?:\*\*)?(?:File|Path|Filename)(?:\*\*)?[ \t]*:[ \t]*`?([^\n`]+?)`?[ \t]*(?:-->)?[ \t]*\n[ \t]*```[^\n]*\n([\s\S]*?)```/gi
 
@@ -637,6 +656,20 @@ function toolBundleFor(input: {
         message: saved,
         meeting: meetingSummary(input.meetingId)
       })
+      const coordinator = coordinatorAgent(input.meetingId)
+      notifyTeamMessage(
+        input.sender,
+        input.meetingId,
+        coordinator,
+        `@${request.targetAgentId}: ${input.agent.name} needs "${created.title}" built by you first. Please handle it after your current work and notify the team when it is done.`,
+        'message',
+        request.targetAgentId
+      )
+      coordinatorStatusMessage(
+        input.sender,
+        input.meetingId,
+        `${input.agent.name} is waiting on ${request.targetAgentId} for "${created.title}". I queued it as a high-priority request. ${request.targetAgentId} will handle it after its current task, then ${input.agent.name} resumes automatically.`
+      )
       input.onTaskChanged?.(waiting)
       return {
         taskId: created.id,
@@ -1301,28 +1334,75 @@ async function runReviewerTurn(input: {
   }
 }
 
-function notifyTeam(
-  context: BuildContext,
+function notifyTeamMessage(
+  sender: WebContents,
+  meetingId: string,
   agent: AgentConfig,
   content: string,
-  kind = 'notify'
+  kind = 'notify',
+  targetAgentId: string | null = null
 ): void {
   const message = appendMeetingMessage({
-    meetingId: context.meetingId,
+    meetingId,
     senderType: 'agent',
     senderAgentId: agent.id,
     senderName: agent.name,
-    targetAgentId: null,
+    targetAgentId,
     kind,
     content,
     metadata: { phase: 'build', round: 1, status: 'done' }
   })
-  emit(context.sender, {
+  emit(sender, {
     type: 'message',
-    meetingId: context.meetingId,
+    meetingId,
     message,
-    meeting: meetingSummary(context.meetingId)
+    meeting: meetingSummary(meetingId)
   })
+}
+
+function coordinatorStatusMessage(
+  sender: WebContents,
+  meetingId: string,
+  content: string
+): void {
+  const coordinator = coordinatorAgent(meetingId)
+  const message = appendMeetingMessage({
+    meetingId,
+    senderType: 'agent',
+    senderAgentId: coordinator.id,
+    senderName: coordinator.name,
+    targetAgentId: null,
+    kind: 'status',
+    content,
+    metadata: { phase: 'build', round: 1, status: 'done' }
+  })
+  emit(sender, {
+    type: 'message',
+    meetingId,
+    message,
+    meeting: meetingSummary(meetingId)
+  })
+}
+
+function notifyTeam(
+  context: BuildContext,
+  agent: AgentConfig,
+  content: string,
+  kind = 'notify',
+  targetAgentId: string | null = null
+): void {
+  notifyTeamMessage(
+    context.sender,
+    context.meetingId,
+    agent,
+    content,
+    kind,
+    targetAgentId
+  )
+}
+
+function coordinatorStatus(context: BuildContext, content: string): void {
+  coordinatorStatusMessage(context.sender, context.meetingId, content)
 }
 
 function taskFiles(context: BuildContext, taskId: string): string[] {
@@ -1383,6 +1463,17 @@ function completeTask(context: BuildContext, task: MeetingTask, agent: AgentConf
       'notify'
     )
   }
+  const remaining = context.tasks.filter(
+    (entry) => entry.status !== 'done' && entry.status !== 'blocked'
+  ).length
+  coordinatorStatus(
+    context,
+    `${agent.name} completed "${done.title}" and QA approved it.${
+      released.length > 0
+        ? ` This also unblocked ${released.map((entry) => entry.title).join(', ')}.`
+        : ''
+    } ${remaining > 0 ? `I am continuing with ${remaining} remaining work item${remaining === 1 ? '' : 's'}.` : 'I am preparing the final report.'}`
+  )
 }
 
 function blockTask(
@@ -1414,6 +1505,18 @@ function blockTask(
       agent,
       `Blocked "${blocked.title}": ${note}`,
       'notify'
+    )
+    const coordinator = coordinatorAgent(context.meetingId)
+    notifyTeam(
+      context,
+      coordinator,
+      `@${agent.id}: "${blocked.title}" is paused. Reduce it to one small file, call write_file or apply_patch before reporting, and run the smallest check. If you need another agent, use request_from_agent.`,
+      'message',
+      agent.id
+    )
+    coordinatorStatus(
+      context,
+      `${agent.name} hit a blocker on "${blocked.title}": ${note}. I paused that task, told ${agent.name} to retry in smaller steps, and kept the independent tasks running. I will report when it is resolved or needs your decision.`
     )
   } catch (transitionError) {
     log.warn('Could not mark a Build task blocked', {
@@ -1553,6 +1656,16 @@ async function runTaskPipeline(input: {
       })
       if (reviewTurn) {
         review = reviewResult(reviewTurn.text)
+        const reviewMessage = updateMeetingMessage({
+          messageId: reviewTurn.message.id,
+          content: reviewChatText(review)
+        })
+        emit(context.sender, {
+          type: 'message',
+          meetingId: context.meetingId,
+          message: reviewMessage,
+          meeting: meetingSummary(context.meetingId)
+        })
       }
       if (!review) {
         break
@@ -1588,8 +1701,16 @@ async function runTaskPipeline(input: {
           `Blocked "${working.title}" after ${reviewCycle} review cycles: ${review.summary}`,
           'notify'
         )
+        coordinatorStatus(
+          context,
+          `I stopped "${working.title}" after ${reviewCycle} review cycles because QA still saw: ${review.summary}. The independent tasks keep running. Tell me if you want this retried with a narrower scope.`
+        )
         return
       }
+      coordinatorStatus(
+        context,
+        `QA asked for changes on "${working.title}". I directed ${implementer.name} to fix ${review.issues.length} item${review.issues.length === 1 ? '' : 's'} and re-run the checks, then QA reviews again.`
+      )
       working = transitionMeetingTask({
         taskId: working.id,
         status: 'changes_requested',
@@ -1720,6 +1841,10 @@ async function runBuild(context: BuildContext): Promise<void> {
       `Team, we are starting in parallel. Max ${maxConcurrent} agents. Post progress, request work when blocked, and notify me when your part is complete.`,
       'message'
     )
+    coordinatorStatus(
+      context,
+      `Build started with ${context.tasks.length} work items. I am running up to ${maxConcurrent} agents in parallel. I will report progress, blockers, and how I handle them here.`
+    )
 
     while (!context.controller.signal.aborted) {
       context.tasks = listMeetingTasks(context.meetingId)
@@ -1834,6 +1959,10 @@ async function runBuild(context: BuildContext): Promise<void> {
               task: updated,
               meeting: meetingSummary(context.meetingId)
             })
+            coordinatorStatus(
+              context,
+              `"${candidate.title}" is waiting for ${pending.map((entry) => entry.title).join(', ')}. I will start it automatically when that work finishes.`
+            )
           }
           continue
         }

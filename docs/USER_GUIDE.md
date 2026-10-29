@@ -37,7 +37,9 @@ The Project desk is the single workspace for planning and building. It has three
 
 - Left: sessions, project files, and the team roster with live statuses.
 - Middle: the Boss-to-Coordinator chat. Only the Coordinator answers you.
-- Right: the agent team channel, agent flows (personal todo lists), the task board, and active file claims.
+- Right: live agent activity, the agent team channel, agent flows (personal todo lists), the task board, and active file claims.
+
+Chat is plain English. Structured plan, intake, and review data is converted to a readable summary before it is stored. Legacy JSON messages are hidden, and large code blocks are omitted from chat and point to the project files instead. Live agent activity shows each agent's current task, latest tool, and blocker.
 
 Sessions are listed in the left sidebar. Load an old session by clicking it, rename it with the edit button, delete it with the trash button, or press `New` for a fresh session. A Plan or Build session is saved automatically when it starts.
 
@@ -60,6 +62,7 @@ Agents coordinate in the shared team channel:
 - `post_message` reports progress to the whole team.
 - `request_from_agent` asks another agent to build a missing piece. This creates a high-priority request task, posts it in the channel, and puts the requesting task into `Waiting`. When the request is complete, the waiting task resumes automatically.
 - Completing a task notifies the whole team and releases anything waiting on it.
+- The Coordinator reports progress, waits, requests, review changes, blockers, and completions to you in the main chat, and posts concrete directions to the affected agent in the team channel.
 - Each agent keeps its own todo list with `todo_write` and `todo_read`, shown as Agent flows on the right.
 
 Every file change is claim-checked, snapshotted, and recorded. If an agent answers with source code but does not write files, AgentDesk asks it to call its write tools; if it still does not write, the task is stopped with a clear reason instead of pretending the files exist.

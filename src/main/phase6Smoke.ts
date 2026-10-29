@@ -228,6 +228,16 @@ export async function runPhase6Smoke(): Promise<number> {
     if (discussions.length !== 6) {
       throw new Error(`Expected six discussion turns, got ${discussions.length}`)
     }
+    if (intakes.some((message) => /^\s*[{[]/.test(message.content.trim()))) {
+      throw new Error('An intake message leaked raw JSON into the chat')
+    }
+    const planMessage = completed.messages.find((message) => message.kind === 'plan')
+    if (!planMessage || !planMessage.content.includes('Work items:')) {
+      throw new Error('The plan message is not conversational for the Boss')
+    }
+    if (planMessage.content.includes('"tasks"')) {
+      throw new Error('The plan message still contains raw JSON')
+    }
     if (completed.meeting.usage.turns < 13) {
       throw new Error('Meeting usage did not record every turn')
     }

@@ -258,6 +258,60 @@ function stringArray(value: unknown): string[] {
     .filter(Boolean)
 }
 
+function intakeCardText(card: MeetingIntakeCard): string {
+  const lines = [card.understanding]
+  if (card.concerns.length > 0) {
+    lines.push('', `Concerns: ${card.concerns.join('; ')}`)
+  }
+  if (card.files.length > 0) {
+    lines.push(`Files to inspect: ${card.files.join(', ')}`)
+  }
+  if (card.risks.length > 0) {
+    lines.push(`Risks: ${card.risks.join('; ')}`)
+  }
+  if (card.approach) {
+    lines.push('', `Approach: ${card.approach}`)
+  }
+  return lines.join('\n')
+}
+
+function planChatText(
+  plan: MeetingPlan,
+  participants: MeetingParticipant[],
+  goal: string
+): string {
+  const names = new Map(participants.map((participant) => [participant.agentId, participant.name]))
+  const lines = [
+    `Here is the plan for: ${goal}`,
+    '',
+    plan.summary,
+    '',
+    `Approach: ${plan.approach}`,
+    '',
+    'Work items:'
+  ]
+  plan.tasks.forEach((task, index) => {
+    const owner = names.get(task.assigneeAgentId) ?? task.assigneeAgentId
+    const depends =
+      task.dependsOn.length > 0 ? ` (after ${task.dependsOn.join(', ')})` : ''
+    lines.push(`${index + 1}. ${task.title} - ${owner}${depends}`)
+    if (task.acceptanceCriteria) {
+      lines.push(`   Done when: ${task.acceptanceCriteria}`)
+    }
+  })
+  if (plan.decisions.length > 0) {
+    lines.push('', 'Decisions:')
+    for (const decision of plan.decisions) {
+      lines.push(`- ${decision.title}: ${decision.decision}`)
+    }
+  }
+  if (plan.risks.length > 0) {
+    lines.push('', `Risks: ${plan.risks.join('; ')}`)
+  }
+  lines.push('', 'Approve the plan when you are ready, then switch to Build.')
+  return lines.join('\n')
+}
+
 function intakeCardFromText(text: string): MeetingIntakeCard {
   try {
     const parsed = extractJsonObject(text)
@@ -994,9 +1048,9 @@ async function runMeeting(context: MeetingContext): Promise<void> {
         ...new Set([...context.checkpoint.completedIntakeAgentIds, agent.id])
       ]
       saveCheckpoint(context)
-      updateMeetingMessage({
+      const intakeMessage = updateMeetingMessage({
         messageId: turn.message.id,
-        content: turn.text,
+        content: intakeCardText(card),
         metadata: turnMetadata({
           phase: 'intake',
           round: 1,
@@ -1007,6 +1061,12 @@ async function runMeeting(context: MeetingContext): Promise<void> {
           toolCalls: turn.toolTraces,
           card
         })
+      })
+      emit(context.sender, {
+        type: 'message',
+        meetingId: context.meetingId,
+        message: intakeMessage,
+        meeting: meetingSummary(context.meetingId)
       })
       const budgetReason = budgetStopReason(context, 1)
       if (budgetReason) {
@@ -1116,6 +1176,16 @@ async function runMeeting(context: MeetingContext): Promise<void> {
         intakeCards
       })
     }
+    const planMessage = updateMeetingMessage({
+      messageId: planningTurn.message.id,
+      content: planChatText(plan, participants, meeting.goal)
+    })
+    emit(context.sender, {
+      type: 'message',
+      meetingId: context.meetingId,
+      message: planMessage,
+      meeting: meetingSummary(context.meetingId)
+    })
     persistPlan({
       meetingId: context.meetingId,
       plan,

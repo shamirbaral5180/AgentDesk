@@ -6,7 +6,7 @@ You direct the team. Six editable specialists inspect the repository, discuss th
 
 ## What is included
 
-- **Project desk**: one unified workspace with sessions, project files, team states, Boss-to-Coordinator chat, the team channel, agent flows, the task board, and file claims.
+- **Project desk**: one unified workspace with sessions, project files, live agent activity, a plain-English Boss-to-Coordinator chat, the team channel, agent flows, the task board, and file claims.
 - **Parallel team**: plan, build, agent requests, waiting tasks, notifications, and per-agent todo flows; up to four agents build in parallel by default.
 - **Build**: enforced snapshots and claims, QA review cycles, task-level revert, Boss interrupts, pause/resume, final report, and diff summary.
 - **Tools**: repository read/search/write/edit/patch/delete/move, shell and background processes, memory, coordination, and MCP for Build agents; read-only tools for Plan.
@@ -63,6 +63,7 @@ Only the portable `.zip` is attached to GitHub releases. AgentDesk checks the la
 
 - [User guide](docs/USER_GUIDE.md)
 - [Upgrade notes v0.8.0 to v0.9.0](docs/UPGRADE-0.9.0.md)
+- [Release notes v0.20.1](RELEASE_NOTES-0.20.1.md)
 - [Release notes v0.20.0](RELEASE_NOTES-0.20.0.md)
 - [Release notes v0.10.0](RELEASE_NOTES-0.10.0.md)
 - [Release notes v0.9.0](RELEASE_NOTES-0.9.0.md)
