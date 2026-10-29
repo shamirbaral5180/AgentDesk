@@ -10,6 +10,7 @@ export type Phase10MockServer = {
   sawReportPrompt: boolean
   sawRequest: boolean
   sawTodo: boolean
+  sawHostRuntimes: boolean
   maxConcurrentBuilds: number
   writePaths: string[]
   close: () => Promise<void>
@@ -143,7 +144,9 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
       sawReportPrompt: false,
       sawRequest: false,
       sawTodo: false,
+      sawHostRuntimes: false,
       requestSent: false,
+      reviewCounts: new Map<string, number>(),
       activeBuilds: 0,
       maxConcurrentBuilds: 0
     }
@@ -190,6 +193,8 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
           state.sawReviewPrompt = state.sawReviewPrompt || isReview
           state.sawReportPrompt = state.sawReportPrompt || isReport
           state.sawTodo = state.sawTodo || serialized.includes('todo_write')
+          state.sawHostRuntimes =
+            state.sawHostRuntimes || system.includes('## Host runtimes')
           const title = taskTitle(system)
           const target = claimPath(system)
 
@@ -230,15 +235,29 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
               ])
               return
             }
+            const count = (state.reviewCounts.get(title) ?? 0) + 1
+            state.reviewCounts.set(title, count)
+            const needsChanges =
+              title.toLowerCase().includes('docs') && count <= 3
             streamText(
               response,
-              JSON.stringify({
-                status: 'approved',
-                summary: 'The task produced its files and the verification passes.',
-                issues: [],
-                testsRun: ['node -e phase10 review ok'],
-                testsPassed: true
-              })
+              JSON.stringify(
+                needsChanges
+                  ? {
+                      status: 'changes_requested',
+                      summary: 'The docs task still needs the same final section.',
+                      issues: ['Add the missing deployment checklist section.'],
+                      testsRun: ['node -e phase10 review ok'],
+                      testsPassed: true
+                    }
+                  : {
+                      status: 'approved',
+                      summary: 'The task produced its files and the verification passes.',
+                      issues: [],
+                      testsRun: ['node -e phase10 review ok'],
+                      testsPassed: true
+                    }
+              )
             )
             return
           }
@@ -349,6 +368,9 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
         },
         get sawTodo() {
           return state.sawTodo
+        },
+        get sawHostRuntimes() {
+          return state.sawHostRuntimes
         },
         get maxConcurrentBuilds() {
           return state.maxConcurrentBuilds

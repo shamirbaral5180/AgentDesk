@@ -13,6 +13,7 @@ import type {
   MeetingMessageMetadata,
   MeetingParticipant,
   MeetingPlan,
+  MeetingQuestion,
   MeetingPlanDecision,
   MeetingPlanFileClaim,
   MeetingPlanTask,
@@ -104,6 +105,19 @@ type TaskRow = {
   created_at: number
   updated_at: number
   completed_at: number | null
+}
+
+type MeetingQuestionRow = {
+  id: string
+  meeting_id: string
+  task_id: string | null
+  agent_id: string
+  question: string
+  options_json: string
+  status: string
+  answer: string | null
+  created_at: number
+  answered_at: number | null
 }
 
 type AgentTodoRow = {
@@ -285,6 +299,28 @@ function toTask(row: TaskRow): MeetingTask {
   }
 }
 
+function toQuestion(row: MeetingQuestionRow): MeetingQuestion {
+  const agent = participantRows(row.meeting_id).find(
+    (entry) => entry.agent_id === row.agent_id
+  )
+  const snapshot = agent
+    ? parseJson<AgentConfig | null>(agent.role_snapshot_json, null)
+    : null
+  return {
+    id: row.id,
+    meetingId: row.meeting_id,
+    taskId: row.task_id,
+    agentId: row.agent_id,
+    agentName: snapshot?.name ?? row.agent_id,
+    question: row.question,
+    options: parseJson<string[]>(row.options_json, []),
+    status: row.status as MeetingQuestion['status'],
+    answer: row.answer,
+    createdAt: row.created_at,
+    answeredAt: row.answered_at
+  }
+}
+
 function toTodo(row: AgentTodoRow): AgentTodo {
   return {
     id: row.id,
@@ -427,6 +463,7 @@ export function getMeetingDetail(meetingId: string): MeetingDetail {
       .all(meetingId) as TaskEventRow[]
   ).map(toTaskEvent)
   const todos = listMeetingTodos(meetingId)
+  const questions = listMeetingQuestions(meetingId)
 
   return {
     meeting: toSummary(row),
@@ -436,6 +473,7 @@ export function getMeetingDetail(meetingId: string): MeetingDetail {
     fileClaims,
     activity,
     todos,
+    questions,
     plan: parseJson<MeetingPlan | null>(row.plan_json, null),
     finalReport: parseJson<MeetingFinalReport | null>(row.final_report_json, null)
   }
@@ -449,6 +487,86 @@ export function listMeetingTodos(meetingId: string): AgentTodo[] {
       )
       .all(meetingId) as AgentTodoRow[]
   ).map(toTodo)
+}
+
+export function listMeetingQuestions(meetingId: string): MeetingQuestion[] {
+  return (
+    database()
+      .prepare('SELECT * FROM meeting_questions WHERE meeting_id = ? ORDER BY created_at ASC')
+      .all(meetingId) as MeetingQuestionRow[]
+  ).map(toQuestion)
+}
+
+export function createMeetingQuestion(input: {
+  meetingId: string
+  taskId?: string | null
+  agentId: string
+  question: string
+  options: string[]
+}): MeetingQuestion {
+  const id = randomUUID()
+  const now = Date.now()
+  database()
+    .prepare(
+      `INSERT INTO meeting_questions
+        (id, meeting_id, task_id, agent_id, question, options_json, status, answer, created_at, answered_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)`
+    )
+    .run(
+      id,
+      input.meetingId,
+      input.taskId ?? null,
+      input.agentId,
+      input.question,
+      JSON.stringify(input.options),
+      now
+    )
+  database()
+    .prepare('UPDATE meetings SET updated_at = ? WHERE id = ?')
+    .run(now, input.meetingId)
+  return toQuestion(
+    database()
+      .prepare('SELECT * FROM meeting_questions WHERE id = ?')
+      .get(id) as MeetingQuestionRow
+  )
+}
+
+export function answerMeetingQuestionRecord(input: {
+  meetingId: string
+  questionId: string
+  answer: string
+}): MeetingQuestion {
+  const current = database()
+    .prepare('SELECT * FROM meeting_questions WHERE id = ? AND meeting_id = ?')
+    .get(input.questionId, input.meetingId) as MeetingQuestionRow | undefined
+  if (!current) {
+    throw new AppError('QUESTION_NOT_FOUND', 'This question no longer exists.')
+  }
+  if (current.status !== 'pending') {
+    throw new AppError('QUESTION_ALREADY_ANSWERED', 'This question was already answered.')
+  }
+  const now = Date.now()
+  database()
+    .prepare(
+      "UPDATE meeting_questions SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?"
+    )
+    .run(input.answer, now, input.questionId)
+  database()
+    .prepare('UPDATE meetings SET updated_at = ? WHERE id = ?')
+    .run(now, input.meetingId)
+  return toQuestion(
+    database()
+      .prepare('SELECT * FROM meeting_questions WHERE id = ?')
+      .get(input.questionId) as MeetingQuestionRow
+  )
+}
+
+export function cancelMeetingQuestions(meetingId: string, reason: string): void {
+  database()
+    .prepare(
+      "UPDATE meeting_questions SET status = 'cancelled', answer = ?, answered_at = ? WHERE meeting_id = ? AND status = 'pending'"
+    )
+    .run(reason, Date.now(), meetingId)
 }
 
 export function listAgentTodos(meetingId: string, agentId: string): AgentTodo[] {
@@ -809,6 +927,7 @@ export function deleteMeetingRecord(meetingId: string): void {
   try {
     for (const table of [
       'agent_todos',
+      'meeting_questions',
       'task_events',
       'tasks',
       'decisions',

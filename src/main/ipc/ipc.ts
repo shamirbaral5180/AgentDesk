@@ -1,4 +1,4 @@
-﻿import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, WebContents } from 'electron'
 import { z } from 'zod'
 import {
@@ -36,6 +36,7 @@ import {
   type MeetingDetail,
   type MeetingDirectMessageRequest,
   type MeetingInterruptRequest,
+  type MeetingQuestion,
   type MeetingSummary,
   type McpCallAudit,
   type McpProjectConfig,
@@ -115,6 +116,7 @@ import {
   approveMeetingPlan,
   cancelAllMeetings,
   createBuildMeeting,
+  answerQuestion,
   createMeeting,
   deleteMeeting,
   getMeeting,
@@ -371,6 +373,12 @@ const meetingIdArgument = z.object({
 const meetingRenameArgument = z.object({
   meetingId: z.string().min(1).max(200),
   title: z.string().trim().min(1).max(160)
+})
+
+const meetingQuestionAnswerArgument = z.object({
+  meetingId: z.string().min(1).max(200),
+  questionId: z.string().min(1).max(200),
+  answer: z.string().trim().min(1).max(2000)
 })
 
 const meetingDirectArgument = z.object({
@@ -686,6 +694,11 @@ export function registerIpcHandlers(): void {
     const argument = parseArgument(meetingIdArgument, rawArgument)
     deleteMeeting(argument.meetingId)
     return null
+  })
+
+  register<MeetingQuestion>(IPC_CHANNELS.meetingQuestionAnswer, (rawArgument) => {
+    const argument = parseArgument(meetingQuestionAnswerArgument, rawArgument)
+    return answerQuestion(argument)
   })
 
   register<MeetingDetail>(IPC_CHANNELS.meetingCreate, (rawArgument) => {

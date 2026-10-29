@@ -20,6 +20,7 @@ const HARD_BLOCK_PATTERNS: Array<[RegExp, string]> = [
 ]
 
 const HIGH_RISK_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(winget|choco|scoop)\s+(install|add)\b/i, 'This command installs host software or a language runtime.'],
   [/\b(npm|pnpm|yarn|bun)\s+(install|i|add|remove|rm|upgrade|update)\b/i, 'This command installs or changes packages.'],
   [/\b(pip|pip3)\s+install\b/i, 'This command installs Python packages.'],
   [/\b(cargo|go)\s+(install|get|add)\b/i, 'This command installs dependencies.'],

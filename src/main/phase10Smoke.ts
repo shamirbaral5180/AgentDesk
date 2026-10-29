@@ -13,6 +13,7 @@ import { closeProject, openProject } from './project/projectService'
 import { getTeam, setAgentModel } from './project/teamService'
 import { addModel, createProvider, deleteProvider } from './providers/providerService'
 import {
+  answerQuestion,
   approveMeetingPlan,
   createBuildMeeting,
   createMeeting,
@@ -37,7 +38,17 @@ function fakeSender(events: MeetingEvent[], approvals: ApprovalEvent[]): WebCont
     isDestroyed: () => false,
     send: (channel: string, event: MeetingEvent | ApprovalEvent) => {
       if (channel === IPC_CHANNELS.meetingEvent) {
-        events.push(event as MeetingEvent)
+        const meetingEvent = event as MeetingEvent
+        events.push(meetingEvent)
+        if (meetingEvent.type === 'question') {
+          setTimeout(() => {
+            answerQuestion({
+              meetingId: meetingEvent.meetingId,
+              questionId: meetingEvent.question.id,
+              answer: 'Retry with a narrower scope'
+            })
+          }, 0)
+        }
         return
       }
       if (channel !== IPC_CHANNELS.approvalEvent) {
@@ -268,6 +279,15 @@ export async function runPhase10Smoke(): Promise<number> {
     if (rawStructured.length > 0) {
       throw new Error(`Structured JSON leaked into chat: ${rawStructured.map((m) => m.kind).join(', ')}`)
     }
+    const answeredQuestions = detail.questions.filter(
+      (question) => question.status === 'answered'
+    )
+    if (answeredQuestions.length < 1) {
+      throw new Error('The Coordinator did not ask the Boss a question with options')
+    }
+    if (!mock.sawHostRuntimes) {
+      throw new Error('Build prompt did not include host runtime detection')
+    }
     if (!mock.sawRequest || mock.maxConcurrentBuilds < 3) {
       throw new Error(
         `Expected at least 3 parallel build turns and a request; saw ${mock.maxConcurrentBuilds} and request=${mock.sawRequest}`
@@ -321,9 +341,11 @@ export async function runPhase10Smoke(): Promise<number> {
       maxConcurrentBuilds: mock.maxConcurrentBuilds,
       sawRequest: mock.sawRequest,
       sawTodo: mock.sawTodo,
+      sawHostRuntimes: mock.sawHostRuntimes,
       todos: detail.todos.length,
       waitingEvents: detail.activity.filter((event) => event.type === 'waiting').length,
       messages: detail.messages.length,
+      answeredQuestions: answeredQuestions.length,
       files: mock.writePaths
     }
     console.log(`PHASE10_SMOKE_RESULT ${JSON.stringify(result)}`)

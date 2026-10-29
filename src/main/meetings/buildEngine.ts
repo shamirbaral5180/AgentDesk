@@ -34,6 +34,7 @@ import {
   getCurrentTeamConfig
 } from '../project/projectService'
 import { createLanguageModel } from '../providers/modelGateway'
+import { hostRuntimePrompt } from '../project/hostRuntime'
 import { formatProviderError } from '../providers/providerErrors'
 import { agentCanUseTools, compileBuildPrompt } from '../chat/promptCompiler'
 import { createAgentTools, type AgentToolBundle } from '../chat/projectTools'
@@ -52,6 +53,7 @@ import {
 import { ensureDir, writeFileAtomic } from '../utils/fs'
 import { resolveWritableProjectPath } from '../chat/pathPolicy'
 import { stopManagedProcess } from '../commands/commandRunner'
+import { askMeetingQuestion, cancelQuestionsForMeeting } from './questionService'
 import {
   createRunLease,
   finishRunLease,
@@ -550,6 +552,16 @@ function toolBundleFor(input: {
         text
       })
     },
+    askBoss: (question: { question: string; options: string[] }) => {
+      const coordinator = coordinatorAgent(input.meetingId)
+      return askMeetingQuestion(input.sender, {
+        meetingId: input.meetingId,
+        taskId: input.taskId,
+        agentId: coordinator.id,
+        question: `${input.agent.name} needs a decision: ${question.question}`,
+        options: question.options
+      })
+    },
     readTodos: () => listAgentTodos(input.meetingId, input.agent.id),
     writeTodos: (items: Array<{ content: string; status?: 'pending' | 'in_progress' | 'done' | 'blocked' }>) => {
       const todos = replaceAgentTodos({
@@ -787,6 +799,7 @@ async function runBuildTurn(input: {
     claims,
     historyText: transcript(allMessages),
     teamChannelText,
+    hostRuntimes: hostRuntimePrompt(),
     todos,
     maxConcurrentAgents: context.budget.maxConcurrentAgents ?? 4,
     memory,
@@ -1073,12 +1086,13 @@ function addUsage(context: BuildContext, turn: TurnResult, round: number): void 
 
 function budgetExceeded(context: BuildContext): boolean {
   const totalTokens = context.usage.inputTokens + context.usage.outputTokens
+  const over = (value: number, limit: number): boolean => limit > 0 && value >= limit
   return (
-    context.usage.turns >= context.budget.maxTurns ||
-    context.usage.messages >= context.budget.maxMessages ||
-    totalTokens >= context.budget.maxTokens ||
-    context.usage.costUsd >= context.budget.maxCostUsd ||
-    context.usage.elapsedMs >= context.budget.maxMinutes * 60_000
+    over(context.usage.turns, context.budget.maxTurns) ||
+    over(context.usage.messages, context.budget.maxMessages) ||
+    over(totalTokens, context.budget.maxTokens) ||
+    over(context.usage.costUsd, context.budget.maxCostUsd) ||
+    over(context.usage.elapsedMs, context.budget.maxMinutes * 60_000)
   )
 }
 
@@ -1405,6 +1419,43 @@ function coordinatorStatus(context: BuildContext, content: string): void {
   coordinatorStatusMessage(context.sender, context.meetingId, content)
 }
 
+async function askBossDecision(
+  context: BuildContext,
+  task: MeetingTask | null,
+  question: string,
+  options: string[]
+): Promise<string> {
+  const coordinator = coordinatorAgent(context.meetingId)
+  coordinatorMessageToBoss(context, question)
+  return askMeetingQuestion(context.sender, {
+    meetingId: context.meetingId,
+    taskId: task?.id ?? null,
+    agentId: coordinator.id,
+    question,
+    options
+  })
+}
+
+function coordinatorMessageToBoss(context: BuildContext, content: string): void {
+  const coordinator = coordinatorAgent(context.meetingId)
+  const message = appendMeetingMessage({
+    meetingId: context.meetingId,
+    senderType: 'agent',
+    senderAgentId: coordinator.id,
+    senderName: coordinator.name,
+    targetAgentId: null,
+    kind: 'status',
+    content,
+    metadata: { phase: 'build', round: 1, status: 'done' }
+  })
+  emit(context.sender, {
+    type: 'message',
+    meetingId: context.meetingId,
+    message,
+    meeting: meetingSummary(context.meetingId)
+  })
+}
+
 function taskFiles(context: BuildContext, taskId: string): string[] {
   return [
     ...new Set(
@@ -1542,6 +1593,8 @@ async function runTaskPipeline(input: {
   const implementer = agentForTask(agents, task, coordinator)
   let working = task
   let reviewCycle = working.reviewCycles
+  let lastIssueSignature = ''
+  let repeatedIssues = 0
   const startedInReview =
     working.status === 'review' || working.status === 'changes_requested'
 
@@ -1629,7 +1682,7 @@ async function runTaskPipeline(input: {
       })
     }
 
-    while (reviewCycle < context.budget.maxReviewCycles) {
+    while (context.budget.maxReviewCycles <= 0 || reviewCycle < context.budget.maxReviewCycles) {
       reviewCycle += 1
       working = meetingTask(working.id)
       context.checkpoint.currentTaskId = working.id
@@ -1687,7 +1740,10 @@ async function runTaskPipeline(input: {
         completeTask(context, working, reviewer)
         return
       }
-      if (reviewCycle >= context.budget.maxReviewCycles) {
+      if (
+        context.budget.maxReviewCycles > 0 &&
+        reviewCycle >= context.budget.maxReviewCycles
+      ) {
         working = transitionMeetingTask({
           taskId: working.id,
           status: 'blocked',
@@ -1706,6 +1762,58 @@ async function runTaskPipeline(input: {
           `I stopped "${working.title}" after ${reviewCycle} review cycles because QA still saw: ${review.summary}. The independent tasks keep running. Tell me if you want this retried with a narrower scope.`
         )
         return
+      }
+      notifyTeam(
+        context,
+        reviewer,
+        `@${implementer.id}: changes requested on "${working.title}".\n${review.issues.map((issue) => `- ${issue}`).join('\n') || review.summary}\nPlease fix these and re-run the checks.`,
+        'message',
+        implementer.id
+      )
+      const signature = normalizeText(review.issues.join('|') || review.summary)
+      if (signature && signature === lastIssueSignature) {
+        repeatedIssues += 1
+      } else {
+        lastIssueSignature = signature
+        repeatedIssues = 0
+      }
+      if (repeatedIssues >= 2) {
+        let answer = 'Retry with a narrower scope'
+        try {
+          answer = await askBossDecision(
+            context,
+            working,
+            `I am stuck on "${working.title}". QA keeps requesting the same changes: ${review.summary}. How should I proceed?`,
+            [
+              'Retry with a narrower scope',
+              'Mark this task blocked and continue',
+              'Stop the build'
+            ]
+          )
+        } catch {
+          return
+        }
+        if (answer.toLowerCase().includes('stop')) {
+          coordinatorStatus(context, 'Stopping the build at your request.')
+          context.controller.abort()
+          return
+        }
+        if (answer.toLowerCase().includes('blocked')) {
+          const blocked = transitionMeetingTask({
+            taskId: working.id,
+            status: 'blocked',
+            agentId: reviewer.id,
+            note: `Boss chose to stop this task. ${review.summary}`,
+            type: 'blocked'
+          })
+          notifyTeam(context, reviewer, `Boss stopped "${blocked.title}".`, 'notify')
+          return
+        }
+        repeatedIssues = 0
+        coordinatorStatus(
+          context,
+          `Retrying "${working.title}" with a narrower scope, as you chose. I will report after QA reviews it.`
+        )
       }
       coordinatorStatus(
         context,
@@ -1761,7 +1869,44 @@ async function runTaskPipeline(input: {
       releaseTaskClaims(context.meetingId, task.id)
       return
     }
-    blockTask(context, meetingTask(task.id), implementer, error)
+    const failedTask = meetingTask(task.id)
+    const note = error instanceof Error ? error.message : String(error)
+    let answer = 'Mark this task blocked and continue'
+    try {
+      answer = await askBossDecision(
+        context,
+        failedTask,
+        `${implementer.name} failed on "${failedTask.title}": ${note}. How should I proceed?`,
+        ['Retry this task', 'Mark this task blocked and continue', 'Stop the build']
+      )
+    } catch {
+      return
+    }
+    if (answer.toLowerCase().includes('stop')) {
+      coordinatorStatus(context, 'Stopping the build at your request.')
+      context.controller.abort()
+      return
+    }
+    if (answer.toLowerCase().includes('blocked')) {
+      blockTask(context, failedTask, implementer, error)
+      return
+    }
+    const retried = transitionMeetingTask({
+      taskId: failedTask.id,
+      status: 'queued',
+      note: `Boss asked for a retry after: ${note}`,
+      type: 'retry'
+    })
+    coordinatorStatus(
+      context,
+      `Retrying "${retried.title}" after the failure: ${note}. I will report the result.`
+    )
+    emit(context.sender, {
+      type: 'task',
+      meetingId: context.meetingId,
+      task: retried,
+      meeting: meetingSummary(context.meetingId)
+    })
   } finally {
     releaseTaskClaims(context.meetingId, task.id)
   }
@@ -2195,7 +2340,16 @@ export function startBuildEngine(
     goal: meeting.goal,
     sender,
     controller,
-    budget: meeting.budget,
+    budget: {
+      ...meeting.budget,
+      maxRounds: 0,
+      maxTurns: 0,
+      maxMessages: 0,
+      maxMinutes: 0,
+      maxTokens: 0,
+      maxCostUsd: 0,
+      maxReviewCycles: 0
+    },
     startedAt: Date.now(),
     usage: meeting.usage,
     plan: detail.plan,
@@ -2217,14 +2371,16 @@ export function stopBuildEngine(meetingId: string, reason: 'user' | 'paused'): M
     active.stopReason = reason
     active.controller.abort()
     cancelApprovalsForSession(meetingSessionId(meetingId))
+    cancelQuestionsForMeeting(meetingId, 'The Build was stopped.')
   }
   return meetingSummary(meetingId)
 }
 
 export function cancelAllBuildRuns(): void {
-  for (const active of activeBuilds.values()) {
+  for (const [meetingId, active] of activeBuilds.entries()) {
     active.stopReason = 'user'
     active.controller.abort()
+    cancelQuestionsForMeeting(meetingId, 'The Build was stopped.')
   }
   activeBuilds.clear()
 }

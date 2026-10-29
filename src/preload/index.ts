@@ -1,4 +1,4 @@
-﻿import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import {
   IPC_CHANNELS,
@@ -40,6 +40,8 @@ import {
   type MeetingDirectMessageRequest,
   type MeetingEvent,
   type MeetingInterruptRequest,
+  type MeetingQuestion,
+  type MeetingQuestionAnswerRequest,
   type MeetingSummary,
   type McpCallAudit,
   type McpProjectConfig,
@@ -243,6 +245,10 @@ const api: AgentDeskApi = {
     >,
   deleteMeeting: (meetingId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.meetingDelete, { meetingId }) as Promise<IpcResult<null>>,
+  answerMeetingQuestion: (input: MeetingQuestionAnswerRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.meetingQuestionAnswer, input) as Promise<
+      IpcResult<MeetingQuestion>
+    >,
   createMeeting: (request: MeetingCreateRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.meetingCreate, request) as Promise<
       IpcResult<MeetingDetail>

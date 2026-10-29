@@ -32,6 +32,7 @@ import {
   startMeetingEngine,
   stopMeetingEngine
 } from './meetingEngine'
+import { answerMeetingQuestion } from './questionService'
 import {
   cancelAllBuildRuns,
   isBuildActive,
@@ -94,6 +95,14 @@ export function getMeeting(meetingId: string): MeetingDetail {
 
 export function renameMeeting(meetingId: string, title: string): MeetingSummary {
   return renameMeetingRecord(meetingId, title)
+}
+
+export function answerQuestion(input: {
+  meetingId: string
+  questionId: string
+  answer: string
+}) {
+  return answerMeetingQuestion(input)
 }
 
 export function deleteMeeting(meetingId: string): void {

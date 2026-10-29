@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs'
+import fs from 'node:fs'
 import path from 'node:path'
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
@@ -106,6 +106,10 @@ export type AgentToolRuntime = {
     fileGlobs?: string[]
     priority?: number
   }) => { taskId: string; title: string; targetAgentId: string } | null
+  askBoss?: (input: {
+    question: string
+    options: string[]
+  }) => Promise<string>
   readTodos?: () => AgentTodo[]
   writeTodos?: (
     items: Array<{ content: string; status?: AgentTodoStatus }>
@@ -1126,6 +1130,20 @@ export function createAgentTools(input: {
             note: 'Your current task is now waiting. End this turn and resume after the request is completed.'
           }
         }
+      })
+    }
+
+    if (typeof runtime.askBoss === 'function') {
+      tools.ask_boss = tool({
+        description:
+          'Ask the Boss for a product decision when you are genuinely blocked by ambiguity. Provide 2 to 6 concrete options. The Coordinator presents the question, and this turn waits for the Boss answer.',
+        inputSchema: z.object({
+          question: z.string().min(5).max(1000),
+          options: z.array(z.string().min(1).max(200)).min(2).max(6)
+        }),
+        execute: async (input) => ({
+          answer: await runtime.askBoss!(input)
+        })
       })
     }
   }

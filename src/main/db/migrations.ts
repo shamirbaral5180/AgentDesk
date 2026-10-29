@@ -433,5 +433,23 @@ CREATE TABLE IF NOT EXISTS agent_todos (
 CREATE INDEX IF NOT EXISTS idx_agent_todos_agent ON agent_todos(meeting_id, agent_id, position);
 CREATE INDEX IF NOT EXISTS idx_tasks_requested_by ON tasks(meeting_id, requested_by_agent_id);
 `
+  },
+  {
+    version: 10,
+    sql: `
+CREATE TABLE IF NOT EXISTS meeting_questions (
+  id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL,
+  task_id TEXT,
+  agent_id TEXT NOT NULL,
+  question TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  answer TEXT,
+  created_at INTEGER NOT NULL,
+  answered_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_questions_meeting ON meeting_questions(meeting_id, status, created_at);
+`
   }
 ]

@@ -53,6 +53,7 @@ export const IPC_CHANNELS = {
   meetingGet: 'meeting:get',
   meetingRename: 'meeting:rename',
   meetingDelete: 'meeting:delete',
+  meetingQuestionAnswer: 'meeting:answer-question',
   meetingCreate: 'meeting:create',
   meetingCreateBuild: 'meeting:create-build',
   meetingStart: 'meeting:start',
@@ -1064,6 +1065,20 @@ export type MeetingTask = {
   completedAt: number | null
 }
 
+export type MeetingQuestion = {
+  id: string
+  meetingId: string
+  taskId: string | null
+  agentId: string
+  agentName: string
+  question: string
+  options: string[]
+  status: 'pending' | 'answered' | 'cancelled'
+  answer: string | null
+  createdAt: number
+  answeredAt: number | null
+}
+
 export type AgentTodoStatus = 'pending' | 'in_progress' | 'done' | 'blocked'
 
 export type AgentTodo = {
@@ -1231,6 +1246,7 @@ export type MeetingDetail = {
   fileClaims: MeetingFileClaim[]
   activity: MeetingTaskEvent[]
   todos: AgentTodo[]
+  questions: MeetingQuestion[]
   plan: MeetingPlan | null
   finalReport: MeetingFinalReport | null
 }
@@ -1255,6 +1271,12 @@ export type MeetingInterruptRequest = {
   meetingId: string
   text: string
   mode: 'queue' | 'immediate'
+}
+
+export type MeetingQuestionAnswerRequest = {
+  meetingId: string
+  questionId: string
+  answer: string
 }
 
 export type MeetingEvent =
@@ -1316,6 +1338,18 @@ export type MeetingEvent =
       meetingId: string
       agentId: string
       todos: AgentTodo[]
+      meeting: MeetingSummary
+    }
+  | {
+      type: 'question'
+      meetingId: string
+      question: MeetingQuestion
+      meeting: MeetingSummary
+    }
+  | {
+      type: 'question-answered'
+      meetingId: string
+      question: MeetingQuestion
       meeting: MeetingSummary
     }
   | {
@@ -1517,6 +1551,9 @@ export type AgentDeskApi = {
   getMeeting: (meetingId: string) => Promise<IpcResult<MeetingDetail>>
   renameMeeting: (meetingId: string, title: string) => Promise<IpcResult<MeetingSummary>>
   deleteMeeting: (meetingId: string) => Promise<IpcResult<null>>
+  answerMeetingQuestion: (
+    input: MeetingQuestionAnswerRequest
+  ) => Promise<IpcResult<MeetingQuestion>>
   createMeeting: (request: MeetingCreateRequest) => Promise<IpcResult<MeetingDetail>>
   createBuildMeeting: (
     request: MeetingBuildCreateRequest

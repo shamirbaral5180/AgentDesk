@@ -240,6 +240,10 @@ export function ProjectDesk({
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [sessionBusy, setSessionBusy] = useState<string | null>(null)
+  const [answeringQuestion, setAnsweringQuestion] = useState(false)
+  const [rightTab, setRightTab] = useState<'activity' | 'team' | 'tasks' | 'flows'>(
+    'activity'
+  )
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -377,6 +381,26 @@ export function ProjectDesk({
         )
         return
       }
+      if (event.type === 'question' || event.type === 'question-answered') {
+        setDetail((current) => {
+          if (!current || current.meeting.id !== event.meetingId) {
+            return current
+          }
+          const exists = current.questions.some(
+            (question) => question.id === event.question.id
+          )
+          return {
+            ...current,
+            meeting: event.meeting,
+            questions: exists
+              ? current.questions.map((question) =>
+                  question.id === event.question.id ? event.question : question
+                )
+              : [...current.questions, event.question]
+          }
+        })
+        return
+      }
       if (event.type === 'todo') {
         setDetail((current) => {
           if (!current || current.meeting.id !== event.meetingId) {
@@ -430,6 +454,8 @@ export function ProjectDesk({
         ['message', 'request', 'notify'].includes(message.kind))
   )
   const activeTasks = detail?.tasks.filter((task) => task.status !== 'done') ?? []
+  const totalTasks = detail?.tasks.length ?? 0
+  const doneTasks = detail?.tasks.filter((task) => task.status === 'done').length ?? 0
   const latestApprovedPlan = meetings.find(
     (meeting) =>
       meeting.mode === 'plan' &&
@@ -651,6 +677,39 @@ export function ProjectDesk({
     }
     setRunning(false)
     await loadMeeting(detail.meeting.id)
+  }
+
+  const pendingQuestion =
+    detail?.questions.find((question) => question.status === 'pending') ?? null
+
+  async function answerQuestion(answer: string): Promise<void> {
+    if (!detail || !pendingQuestion || answeringQuestion) {
+      return
+    }
+    setAnsweringQuestion(true)
+    try {
+      const result = await window.agentdesk.answerMeetingQuestion({
+        meetingId: detail.meeting.id,
+        questionId: pendingQuestion.id,
+        answer
+      })
+      if (!result.ok) {
+        setInlineError(result.error.message)
+        return
+      }
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              questions: current.questions.map((question) =>
+                question.id === result.data.id ? result.data : question
+              )
+            }
+          : current
+      )
+    } finally {
+      setAnsweringQuestion(false)
+    }
   }
 
   const canSend =
@@ -1035,8 +1094,40 @@ export function ProjectDesk({
                 <span className="eyebrow">Team</span>
                 <strong>Agent discussion</strong>
               </div>
-              <span className="soft-chip">{teamMessages.length} turns</span>
+              <span className="soft-chip">
+                {totalTasks > 0 ? `${doneTasks}/${totalTasks} done` : 'Ready'}
+              </span>
             </header>
+            <div className="desk-right-tabs">
+              <button
+                className={rightTab === 'activity' ? 'active' : ''}
+                type="button"
+                onClick={() => setRightTab('activity')}
+              >
+                Activity
+              </button>
+              <button
+                className={rightTab === 'team' ? 'active' : ''}
+                type="button"
+                onClick={() => setRightTab('team')}
+              >
+                Team
+              </button>
+              <button
+                className={rightTab === 'tasks' ? 'active' : ''}
+                type="button"
+                onClick={() => setRightTab('tasks')}
+              >
+                Tasks
+              </button>
+              <button
+                className={rightTab === 'flows' ? 'active' : ''}
+                type="button"
+                onClick={() => setRightTab('flows')}
+              >
+                Flows
+              </button>
+            </div>
             <div className="desk-activity-scroll">
               {detail?.meeting && (
                 <div className="desk-activity-group">
@@ -1044,7 +1135,7 @@ export function ProjectDesk({
                   <p className="desk-goal">{detail.meeting.goal.slice(0, 220)}</p>
                 </div>
               )}
-              {detail && (
+              {rightTab === 'activity' && detail && (
                 <div className="desk-task-section">
                   <span className="desk-activity-label">Live agent activity</span>
                   {project.agents
@@ -1106,7 +1197,7 @@ export function ProjectDesk({
                 </div>
               )}
 
-              {teamMessages.length === 0 ? (
+              {rightTab === 'team' && (teamMessages.length === 0 ? (
                 <div className="desk-empty small">
                   Agent-to-agent updates appear here once the team starts working.
                 </div>
@@ -1144,9 +1235,9 @@ export function ProjectDesk({
                     </article>
                   )
                 })
-              )}
+              ))}
 
-              {(detail?.todos ?? []).length > 0 && (
+              {rightTab === 'flows' && (detail?.todos ?? []).length > 0 && (
                 <div className="desk-task-section">
                   <span className="desk-activity-label">Agent flows</span>
                   {project.agents.map((agent) => {
@@ -1171,7 +1262,7 @@ export function ProjectDesk({
                 </div>
               )}
 
-              {activeTasks.length > 0 && (
+              {rightTab === 'tasks' && activeTasks.length > 0 && (
                 <div className="desk-task-section">
                   <span className="desk-activity-label">Tasks & claims</span>
                   {activeTasks.map((task) => {
@@ -1207,8 +1298,9 @@ export function ProjectDesk({
                 </div>
               )}
 
-              {(detail?.fileClaims ?? []).filter((claim) => claim.status === 'active').length >
-                0 && (
+              {rightTab === 'tasks' &&
+                (detail?.fileClaims ?? []).filter((claim) => claim.status === 'active').length >
+                  0 && (
                 <div className="desk-task-section">
                   <span className="desk-activity-label">Active file claims</span>
                   {(detail?.fileClaims ?? [])
@@ -1225,6 +1317,40 @@ export function ProjectDesk({
           </aside>
         </div>
       </main>
+
+      {pendingQuestion && (
+        <div className="modal-backdrop question-backdrop" role="presentation">
+          <div className="modal question-modal" role="dialog" aria-modal="true">
+            <header className="question-header">
+              <span className="question-icon">
+                <Icon name="chat" size={18} />
+              </span>
+              <div>
+                <span className="eyebrow">Coordinator needs your decision</span>
+                <h2>{pendingQuestion.question}</h2>
+                <p>{pendingQuestion.agentName} is asking on behalf of the team.</p>
+              </div>
+            </header>
+            <div className="question-options">
+              {pendingQuestion.options.map((option, index) => (
+                <button
+                  key={option}
+                  className="question-option"
+                  type="button"
+                  disabled={answeringQuestion}
+                  onClick={() => void answerQuestion(option)}
+                >
+                  <span>{option}</span>
+                  <kbd>{index + 1}</kbd>
+                </button>
+              ))}
+            </div>
+            <p className="question-hint">
+              The team is waiting. Nothing is blocked permanently; your answer directs the next step.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

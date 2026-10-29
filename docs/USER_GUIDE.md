@@ -37,7 +37,7 @@ The Project desk is the single workspace for planning and building. It has three
 
 - Left: sessions, project files, and the team roster with live statuses.
 - Middle: the Boss-to-Coordinator chat. Only the Coordinator answers you.
-- Right: live agent activity, the agent team channel, agent flows (personal todo lists), the task board, and active file claims.
+- Right: Activity, Team, Tasks, and Flows tabs. Activity shows live agent work, Team shows the shared channel, Tasks shows the task board and file claims, and Flows shows each agent's personal todo list.
 
 Chat is plain English. Structured plan, intake, and review data is converted to a readable summary before it is stored. Legacy JSON messages are hidden, and large code blocks are omitted from chat and point to the project files instead. Live agent activity shows each agent's current task, latest tool, and blocker.
 
@@ -63,6 +63,8 @@ Agents coordinate in the shared team channel:
 - `request_from_agent` asks another agent to build a missing piece. This creates a high-priority request task, posts it in the channel, and puts the requesting task into `Waiting`. When the request is complete, the waiting task resumes automatically.
 - Completing a task notifies the whole team and releases anything waiting on it.
 - The Coordinator reports progress, waits, requests, review changes, blockers, and completions to you in the main chat, and posts concrete directions to the affected agent in the team channel.
+- Build has no meeting time, turn, message, or token stop. It runs until complete, until you stop it, or until a real no-progress failure. Reviews also have no fixed cycle limit.
+- When QA and an implementer repeat the same issue, or an agent fails, the Coordinator asks you with options instead of blocking silently. Agents can also call `ask_boss` when they are genuinely blocked by ambiguity.
 - Each agent keeps its own todo list with `todo_write` and `todo_read`, shown as Agent flows on the right.
 
 Every file change is claim-checked, snapshotted, and recorded. If an agent answers with source code but does not write files, AgentDesk asks it to call its write tools; if it still does not write, the task is stopped with a clear reason instead of pretending the files exist.
@@ -79,7 +81,9 @@ The final report lists files, commands, tests, requests, approvals, unresolved i
 
 ## 7. Tools and approvals
 
-Build agents have full access inside the project: `list_files`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `apply_patch`, `patch_file`, `delete_path`, `move_path`, `run_command`, background process tools, `recall_memory`, personal todos, team messages and requests, and MCP tools. Plan mode offers read-only tools.
+Build agents have full access inside the project: `list_files`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `apply_patch`, `patch_file`, `delete_path`, `move_path`, `run_command`, background process tools, `recall_memory`, personal todos, team messages and requests, `ask_boss`, and MCP tools. Plan mode offers read-only tools.
+
+AgentDesk detects Node.js, npm, Python, pip, Git, Docker, .NET, and Java on the host and puts them in the Build prompt. Agents use the host runtimes and do not install language runtimes inside the project. Installing project dependencies is still allowed when needed.
 
 Writes are approved automatically inside the repository. Approval is required, with details, for commands or paths outside the project and for installs, downloads, container images and containers, deploys, git pushes, inline code execution, destructive commands, and destructive MCP tools.
 
