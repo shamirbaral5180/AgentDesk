@@ -11,6 +11,7 @@ export type Phase10MockServer = {
   sawRequest: boolean
   sawTodo: boolean
   sawHostRuntimes: boolean
+  sawSkills: boolean
   maxConcurrentBuilds: number
   writePaths: string[]
   close: () => Promise<void>
@@ -145,6 +146,7 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
       sawRequest: false,
       sawTodo: false,
       sawHostRuntimes: false,
+      sawSkills: false,
       requestSent: false,
       reviewCounts: new Map<string, number>(),
       activeBuilds: 0,
@@ -195,6 +197,7 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
           state.sawTodo = state.sawTodo || serialized.includes('todo_write')
           state.sawHostRuntimes =
             state.sawHostRuntimes || system.includes('## Host runtimes')
+          state.sawSkills = state.sawSkills || system.includes('## Your specialist skills')
           const title = taskTitle(system)
           const target = claimPath(system)
 
@@ -371,6 +374,9 @@ export function createPhase10MockServer(): Promise<Phase10MockServer> {
         },
         get sawHostRuntimes() {
           return state.sawHostRuntimes
+        },
+        get sawSkills() {
+          return state.sawSkills
         },
         get maxConcurrentBuilds() {
           return state.maxConcurrentBuilds

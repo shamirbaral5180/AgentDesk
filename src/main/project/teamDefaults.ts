@@ -9,6 +9,7 @@ import {
 } from '@shared/types'
 import { createLogger } from '../config/logger'
 import { readJsonFile, timestampSlug, writeJsonAtomic } from '../utils/fs'
+import { defaultSkillsForRole } from '../skills/builtinSkills'
 
 const log = createLogger('team')
 
@@ -35,6 +36,7 @@ const agentSchema = z.object({
   enabled: z.boolean(),
   promptAppend: z.string(),
   model: modelSchema.nullable(),
+  skills: z.array(z.string()).default([]),
   permissions: permissionsSchema
 })
 
@@ -98,6 +100,7 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       enabled: true,
       promptAppend: '',
       model: null,
+      skills: [],
       permissions: {
         writeGlobs: ['.agentdesk/context/**'],
         denyGlobs,
@@ -113,6 +116,7 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       enabled: true,
       promptAppend: '',
       model: null,
+      skills: [],
       permissions: {
         writeGlobs: [
           'src/renderer/**',
@@ -137,6 +141,7 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       enabled: true,
       promptAppend: '',
       model: null,
+      skills: [],
       permissions: {
         writeGlobs: [
           'src/main/**',
@@ -159,6 +164,7 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       enabled: true,
       promptAppend: '',
       model: null,
+      skills: [],
       permissions: {
         writeGlobs: [
           '**/*.sql',
@@ -180,6 +186,7 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       enabled: true,
       promptAppend: '',
       model: null,
+      skills: [],
       permissions: {
         writeGlobs: [
           'tests/**',
@@ -200,6 +207,7 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       enabled: true,
       promptAppend: '',
       model: null,
+      skills: [],
       permissions: {
         writeGlobs: [
           'package.json',
@@ -214,6 +222,10 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       }
     }
   ]
+
+  for (const agent of agents) {
+    agent.skills = defaultSkillsForRole(agent.roleKey)
+  }
 
   return {
     schemaVersion: APP_SCHEMA_VERSION,
@@ -257,7 +269,13 @@ export function loadOrCreateTeam(teamPath: string, bossName: string): TeamConfig
   }
 
   try {
-    return teamConfigSchema.parse(readJsonFile<unknown>(teamPath)) as TeamConfig
+    const team = teamConfigSchema.parse(readJsonFile<unknown>(teamPath)) as TeamConfig
+    for (const agent of team.agents) {
+      if (!agent.skills || agent.skills.length === 0) {
+        agent.skills = defaultSkillsForRole(agent.roleKey)
+      }
+    }
+    return team
   } catch (error) {
     const backupPath = path.join(
       path.dirname(teamPath),
@@ -295,6 +313,7 @@ export function toAgentSummaries(team: TeamConfig): AgentSummary[] {
     model: agent.model,
     modelLabel: agent.model
       ? `${agent.model.providerType} / ${agent.model.modelId}`
-      : null
+      : null,
+    skills: agent.skills ?? defaultSkillsForRole(agent.roleKey)
   }))
 }

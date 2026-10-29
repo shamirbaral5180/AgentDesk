@@ -24,7 +24,11 @@ import {
   startMeeting
 } from './meetings/meetingService'
 import { assessCommand } from './commands/commandPolicy'
-import { persistPlan, setMeetingStatus } from './meetings/meetingStore'
+import {
+  createRequestTask,
+  persistPlan,
+  setMeetingStatus
+} from './meetings/meetingStore'
 import { decideApproval } from './approvals/approvalService'
 import { killAllManagedProcesses } from './commands/commandRunner'
 import { createPhase10MockServer, type Phase10MockServer, PHASE10_MOCK_KEY } from './phase10Mock'
@@ -255,6 +259,16 @@ export async function runPhase10Smoke(): Promise<number> {
     if (requestTask.status !== 'done') {
       throw new Error(`The shared request task is ${requestTask.status}`)
     }
+    const duplicateRequest = createRequestTask({
+      meetingId: build.meeting.id,
+      requestedByAgentId: 'backend',
+      targetAgentId: 'database',
+      title: requestTask.title,
+      description: requestTask.description
+    })
+    if (duplicateRequest.created) {
+      throw new Error('The same request created a duplicate task')
+    }
     const backendTask = detail.tasks.find((task) => task.title === 'Backend API')
     if (!backendTask || backendTask.status !== 'done') {
       throw new Error('The waiting backend task did not resume and finish')
@@ -287,6 +301,9 @@ export async function runPhase10Smoke(): Promise<number> {
     }
     if (!mock.sawHostRuntimes) {
       throw new Error('Build prompt did not include host runtime detection')
+    }
+    if (!mock.sawSkills) {
+      throw new Error('Build prompt did not include assigned specialist skills')
     }
     if (!mock.sawRequest || mock.maxConcurrentBuilds < 3) {
       throw new Error(
@@ -342,6 +359,7 @@ export async function runPhase10Smoke(): Promise<number> {
       sawRequest: mock.sawRequest,
       sawTodo: mock.sawTodo,
       sawHostRuntimes: mock.sawHostRuntimes,
+      sawSkills: mock.sawSkills,
       todos: detail.todos.length,
       waitingEvents: detail.activity.filter((event) => event.type === 'waiting').length,
       messages: detail.messages.length,

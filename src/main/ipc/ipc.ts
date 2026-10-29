@@ -348,6 +348,7 @@ const agentRosterPatchArgument = z.object({
   color: z.string().max(20).optional(),
   enabled: z.boolean().optional(),
   promptAppend: z.string().max(20_000).optional(),
+  skills: z.array(z.string().max(120)).max(20).optional(),
   permissions: agentPermissionsArgument.optional()
 })
 
@@ -357,6 +358,7 @@ const agentCreateArgument = z.object({
   tagline: z.string().max(300).optional(),
   color: z.string().max(20).optional(),
   promptAppend: z.string().max(20_000).optional(),
+  skills: z.array(z.string().max(120)).max(20).optional(),
   permissions: agentPermissionsArgument.optional()
 })
 

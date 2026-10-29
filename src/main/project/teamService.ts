@@ -13,6 +13,7 @@ import type {
 } from '@shared/types'
 import { loadSettings } from '../config/settings'
 import { AppError } from '../errors'
+import { defaultSkillsForRole } from '../skills/builtinSkills'
 import {
   getCurrentProject,
   getCurrentTeamConfig,
@@ -140,6 +141,7 @@ function updateAgentInTeam(team: TeamConfig, patch: AgentRosterPatch): TeamConfi
     color,
     enabled: patch.enabled ?? existing.enabled,
     promptAppend: patch.promptAppend ?? existing.promptAppend,
+    skills: patch.skills ?? existing.skills ?? [],
     permissions: sanitizePermissions(patch.permissions, existing.permissions)
   }
   return {
@@ -195,6 +197,7 @@ export function addAgent(input: AgentCreateInput): TeamMutationResult {
     enabled: true,
     promptAppend: input.promptAppend?.trim() || '',
     model: null,
+    skills: input.skills ?? defaultSkillsForRole(roleKey),
     permissions
   }
   const nextTeam = updateCurrentTeam((team) => ({

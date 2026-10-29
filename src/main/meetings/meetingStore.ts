@@ -1523,7 +1523,7 @@ export function createRequestTask(input: {
   fileGlobs?: string[]
   parentTaskId?: string | null
   priority?: number
-}): MeetingTask {
+}): { task: MeetingTask; created: boolean } {
   const meeting = meetingRow(input.meetingId)
   const participants = participantRows(input.meetingId)
   if (!participants.some((participant) => participant.agent_id === input.targetAgentId)) {
@@ -1531,6 +1531,30 @@ export function createRequestTask(input: {
       'REQUEST_TARGET_INVALID',
       'The requested agent is not a participant in this Build meeting.'
     )
+  }
+  const existing = database()
+    .prepare(
+      `SELECT * FROM tasks
+       WHERE meeting_id = ? AND assignee_agent_id = ?
+         AND lower(trim(title)) = lower(trim(?))
+       ORDER BY created_at DESC LIMIT 1`
+    )
+    .get(input.meetingId, input.targetAgentId, input.title) as TaskRow | undefined
+  if (existing) {
+    return { task: toTask(existing), created: false }
+  }
+  if (input.targetAgentId === meeting.coordinator_agent_id) {
+    const openCoordinatorTask = database()
+      .prepare(
+        `SELECT * FROM tasks
+         WHERE meeting_id = ? AND assignee_agent_id = ?
+           AND status IN ('queued', 'in_progress', 'waiting', 'review', 'changes_requested', 'blocked')
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(input.meetingId, input.targetAgentId) as TaskRow | undefined
+    if (openCoordinatorTask) {
+      return { task: toTask(openCoordinatorTask), created: false }
+    }
   }
   const id = randomUUID()
   const now = Date.now()
@@ -1567,7 +1591,7 @@ export function createRequestTask(input: {
     toStatus: 'queued',
     note: `Requested by ${input.requestedByAgentId}.`
   })
-  return meetingTask(id)
+  return { task: meetingTask(id), created: true }
 }
 
 export function setTaskWaiting(input: {

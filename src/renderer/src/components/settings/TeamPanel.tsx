@@ -564,6 +564,15 @@ export function TeamPanel({
                       />
                     </label>
 
+                    <div className="field">
+                      <span>Assigned skills</span>
+                      <p className="field-hint">
+                        {agent && (agent.skills ?? []).length > 0
+                          ? agent.skills.join(', ')
+                          : 'No specialist skills assigned.'}
+                      </p>
+                    </div>
+
                     <div className="team-editor-split">
                       <div className="team-editor-panel">
                         <span className="team-editor-label">Model</span>

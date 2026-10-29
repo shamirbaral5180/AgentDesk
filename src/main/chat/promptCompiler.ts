@@ -480,6 +480,7 @@ function buildPhaseInstruction(
       'git pushes, commands outside the project, and inline execution pause for Boss approval.',
       'If you need another agent to build something first, call request_from_agent; your task becomes waiting.',
       'If a request is addressed to you, prioritize it, then notify the requester and the team.',
+      'If the task is an audit, verification, or commit, run the actual command and report the real output; do not only narrate it.',
       'Use post_message to report progress or ask the team. Only the Coordinator talks to the Boss.',
       'Maintain your personal todo flow. Finish with a short report: summary, files changed, commands, blockers.'
     ]
@@ -528,6 +529,7 @@ export function compileBuildPrompt(input: {
   historyText: string
   teamChannelText: string
   hostRuntimes: string
+  skills: string
   todos: AgentTodo[]
   maxConcurrentAgents: number
   memory: MemoryPromptContext
@@ -552,6 +554,7 @@ export function compileBuildPrompt(input: {
     historyText,
     teamChannelText,
     hostRuntimes,
+    skills,
     todos,
     maxConcurrentAgents,
     memory,
@@ -630,7 +633,7 @@ export function compileBuildPrompt(input: {
         'Use write_file or apply_patch for every change. Do not paste full source files into the chat.',
         'Use project-relative paths without a leading slash, for example src/app.ts not /src/app.ts.',
         'Create new files and folders inside the opened project root. Run relevant tests after changes.',
-        'If you need another agent to build something first, call request_from_agent. That creates a high-priority task, posts a request, and puts your task in waiting mode. Do not implement their part yourself.',
+        'If you need another agent to build something first, call request_from_agent. First check the task board; if the same title already exists, reuse it instead of creating a duplicate. Do not implement their part yourself.',
         'If a request is addressed to you in the task board or team channel, prioritize it before starting unrelated work, then notify the requester and the team.',
         'You may ignore team messages that do not affect your part; take the channel seriously when it does.',
         'If you are genuinely blocked by ambiguity or a product decision, call ask_boss with 2 to 6 concrete options. Your turn waits for the Boss answer.',
@@ -688,6 +691,10 @@ export function compileBuildPrompt(input: {
     '',
     '## Your personal flow',
     todoLines,
+    '',
+    '## Your specialist skills',
+    skills || 'No specialist skills are assigned.',
+    'Use load_skill to read the full checklist for any skill before applying it.',
     '',
     '## Host runtimes',
     hostRuntimes || 'No host runtimes detected on PATH.',

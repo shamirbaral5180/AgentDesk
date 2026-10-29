@@ -123,6 +123,9 @@ function agentStatus(
   if (!detail) {
     return { label: 'Ready', tone: 'ready' }
   }
+  if (['completed', 'stopped', 'failed'].includes(detail.meeting.status)) {
+    return { label: 'Stopped', tone: 'off' }
+  }
   const tasks = detail.tasks.filter((task) => task.assigneeAgentId === agent.id)
   if (tasks.some((task) => task.status === 'review')) {
     return { label: 'Reviewing', tone: 'busy' }
@@ -755,7 +758,7 @@ export function ProjectDesk({
         </div>
 
         <div className="boss-line">
-          <span className="status-dot" />
+          <span className={`status-dot ${isBusy ? 'working' : ''}`} />
           Working for <strong>{settings.bossName}</strong>
         </div>
 
@@ -851,11 +854,20 @@ export function ProjectDesk({
               {project.agents.map((agent) => {
                 const status = agentStatus(agent, detail)
                 return (
-                  <div className="team-row" key={agent.id} title={agent.tagline}>
-                    <span className="agent-dot" style={{ backgroundColor: agent.color }} />
+                  <div
+                    className="team-row"
+                    key={agent.id}
+                    title={`${agent.tagline}\nSkills: ${(agent.skills ?? []).join(', ')}`}
+                  >
+                    <span
+                      className={`agent-dot ${status.tone}`}
+                      style={{ backgroundColor: agent.color }}
+                    />
                     <div className="team-row-copy">
                       <strong>{agent.name}</strong>
-                      <span>{agent.roleKey}</span>
+                      <span>
+                        {agent.roleKey} - {(agent.skills ?? []).length} skills
+                      </span>
                     </div>
                     <span className={`agent-state desk-status ${status.tone}`}>
                       {status.label}

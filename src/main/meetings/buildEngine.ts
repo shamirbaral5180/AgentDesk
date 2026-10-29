@@ -35,6 +35,7 @@ import {
 } from '../project/projectService'
 import { createLanguageModel } from '../providers/modelGateway'
 import { hostRuntimePrompt } from '../project/hostRuntime'
+import { skillPrompt } from '../skills/builtinSkills'
 import { formatProviderError } from '../providers/providerErrors'
 import { agentCanUseTools, compileBuildPrompt } from '../chat/promptCompiler'
 import { createAgentTools, type AgentToolBundle } from '../chat/projectTools'
@@ -616,7 +617,7 @@ function toolBundleFor(input: {
       if (request.targetAgentId === input.agent.id) {
         throw new Error('You cannot request work from yourself.')
       }
-      const created = createRequestTask({
+      const requestResult = createRequestTask({
         meetingId: input.meetingId,
         requestedByAgentId: input.agent.id,
         targetAgentId: request.targetAgentId,
@@ -627,6 +628,59 @@ function toolBundleFor(input: {
         parentTaskId: input.task.id,
         priority: request.priority ?? 1
       })
+      const created = requestResult.task
+      if (!requestResult.created) {
+        const alreadyDone = created.status === 'done'
+        const blocked = created.status === 'blocked'
+        const duplicateMessage = appendMeetingMessage({
+          meetingId: input.meetingId,
+          senderType: 'agent',
+          senderAgentId: input.agent.id,
+          senderName: input.agent.name,
+          targetAgentId: request.targetAgentId,
+          kind: 'notify',
+          content: alreadyDone
+            ? `"${created.title}" is already complete, so I did not create a duplicate request.`
+            : blocked
+              ? `"${created.title}" is already blocked. I am not creating a duplicate; the Coordinator will review it.`
+              : `"${created.title}" is already ${created.status.replace('_', ' ')}, so I am reusing that request.`,
+          metadata: { phase: 'build', round: input.round, status: 'done' }
+        })
+        emit(input.sender, {
+          type: 'message',
+          meetingId: input.meetingId,
+          message: duplicateMessage,
+          meeting: meetingSummary(input.meetingId)
+        })
+        if (!alreadyDone && !blocked) {
+          const current = meetingTask(input.task.id)
+          const waiting = setTaskWaiting({
+            taskId: current.id,
+            waitingOnTaskIds: [...current.waitingOnTaskIds, created.id],
+            note: `Waiting for the existing request: ${created.title}`
+          })
+          emit(input.sender, {
+            type: 'task',
+            meetingId: input.meetingId,
+            task: waiting,
+            meeting: meetingSummary(input.meetingId)
+          })
+          input.onTaskChanged?.(waiting)
+        }
+        return {
+          taskId: created.id,
+          title: created.title,
+          targetAgentId: request.targetAgentId,
+          waiting: !alreadyDone && !blocked,
+          alreadyDone,
+          blocked,
+          note: alreadyDone
+            ? 'The requested work is already complete. Continue your task.'
+            : blocked
+              ? 'The existing request is blocked. Ask the Coordinator or the Boss instead of duplicating it.'
+              : 'Reusing the existing request. Wait for it to finish.'
+        }
+      }
       const current = meetingTask(input.task.id)
       const waiting = setTaskWaiting({
         taskId: current.id,
@@ -800,6 +854,7 @@ async function runBuildTurn(input: {
     historyText: transcript(allMessages),
     teamChannelText,
     hostRuntimes: hostRuntimePrompt(),
+    skills: skillPrompt(agent.skills ?? []),
     todos,
     maxConcurrentAgents: context.budget.maxConcurrentAgents ?? 4,
     memory,

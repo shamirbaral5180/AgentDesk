@@ -118,6 +118,7 @@ export type AgentConfig = {
   enabled: boolean
   promptAppend: string
   model: AgentModelRef | null
+  skills: string[]
   permissions: AgentPermissions
 }
 
@@ -920,6 +921,7 @@ export type AgentRosterPatch = {
   color?: string
   enabled?: boolean
   promptAppend?: string
+  skills?: string[]
   permissions?: AgentPermissions
 }
 
@@ -929,6 +931,7 @@ export type AgentCreateInput = {
   tagline?: string
   color?: string
   promptAppend?: string
+  skills?: string[]
   permissions?: AgentPermissions
 }
 
@@ -1451,6 +1454,7 @@ export type AgentSummary = {
   enabled: boolean
   model: AgentModelRef | null
   modelLabel: string | null
+  skills: string[]
 }
 
 export type ProjectInfo = {

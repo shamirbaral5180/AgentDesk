@@ -1,6 +1,6 @@
 {
   "name": "agentdesk",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Portable multi-agent software studio",
   "main": "./out/main/index.js",
   "author": "AgentDesk",

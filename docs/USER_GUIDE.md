@@ -31,6 +31,8 @@ The default team has six editable agents: Coordinator, Frontend, Backend, Databa
 
 Each agent can be assigned a different model and temperature. Build needs a tool-capable model for the agent that owns a task; if the assigned model cannot call tools, the Build start is rejected with the agent names to fix. Plan mode only offers read-only tools.
 
+Every agent also has specialist skills. Defaults are assigned by role, for example frontend gets design system, web performance, accessibility, and testing; backend gets API design, reliability, secure-by-default, and testing; database gets schema/migrations and reliability; QA gets testing, security, and code review; DevOps gets delivery, observability, and reliability. Skills appear in the team tooltip and Settings, Team. Agents see skill summaries in the Build prompt and can call `load_skill` for the full checklist.
+
 ## 4. Project desk
 
 The Project desk is the single workspace for planning and building. It has three panes:
@@ -38,6 +40,8 @@ The Project desk is the single workspace for planning and building. It has three
 - Left: sessions, project files, and the team roster with live statuses.
 - Middle: the Boss-to-Coordinator chat. Only the Coordinator answers you.
 - Right: Activity, Team, Tasks, and Flows tabs. Activity shows live agent work, Team shows the shared channel, Tasks shows the task board and file claims, and Flows shows each agent's personal todo list.
+
+The team dots animate: pulsing while an agent works, blinking while it waits, steady when ready, and grey when the run is stopped.
 
 Chat is plain English. Structured plan, intake, and review data is converted to a readable summary before it is stored. Legacy JSON messages are hidden, and large code blocks are omitted from chat and point to the project files instead. Live agent activity shows each agent's current task, latest tool, and blocker.
 

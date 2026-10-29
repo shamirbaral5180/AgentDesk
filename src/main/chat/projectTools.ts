@@ -25,6 +25,7 @@ import {
 } from '../commands/commandPolicy'
 import { hashBuffer, recordChange, snapshotFile } from '../changes/changeService'
 import { memorySummaryForTool } from '../memory/memoryService'
+import { getBuiltinSkill } from '../skills/builtinSkills'
 import { isPathInside, safeJoin, writeFileAtomic } from '../utils/fs'
 import {
   isSensitiveFileName,
@@ -1083,6 +1084,32 @@ export function createAgentTools(input: {
     })
   }
 
+  if (buildMode && (agent.skills ?? []).length > 0) {
+    tools.load_skill = tool({
+      description:
+        'Read the full checklist for one of your assigned specialist skills. Call this before applying a skill to a task.',
+      inputSchema: z.object({
+        skillId: z.string().min(1).max(120)
+      }),
+      execute: async ({ skillId }) => {
+        if (!(agent.skills ?? []).includes(skillId)) {
+          throw new Error('That skill is not assigned to this agent.')
+        }
+        const skill = getBuiltinSkill(skillId)
+        if (!skill) {
+          throw new Error('Skill not found.')
+        }
+        return {
+          id: skill.id,
+          name: skill.name,
+          provider: skill.provider,
+          description: skill.description,
+          body: skill.body
+        }
+      }
+    })
+  }
+
   if (buildMode) {
     if (typeof runtime.postMessage === 'function') {
       tools.post_message = tool({
@@ -1124,11 +1151,7 @@ export function createAgentTools(input: {
           if (!request) {
             throw new Error('The request could not be created.')
           }
-          return {
-            ...request,
-            waiting: true,
-            note: 'Your current task is now waiting. End this turn and resume after the request is completed.'
-          }
+          return request
         }
       })
     }
