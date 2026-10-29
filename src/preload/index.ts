@@ -237,6 +237,12 @@ const api: AgentDeskApi = {
     ipcRenderer.invoke(IPC_CHANNELS.meetingGet, { meetingId }) as Promise<
       IpcResult<MeetingDetail>
     >,
+  renameMeeting: (meetingId: string, title: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.meetingRename, { meetingId, title }) as Promise<
+      IpcResult<MeetingSummary>
+    >,
+  deleteMeeting: (meetingId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.meetingDelete, { meetingId }) as Promise<IpcResult<null>>,
   createMeeting: (request: MeetingCreateRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.meetingCreate, request) as Promise<
       IpcResult<MeetingDetail>

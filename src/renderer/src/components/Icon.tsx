@@ -29,6 +29,8 @@ export type IconName =
   | 'arrow-down'
   | 'moon'
   | 'sun'
+  | 'edit'
+  | 'trash'
 
 type IconProps = {
   name: IconName
@@ -72,7 +74,9 @@ const paths: Record<IconName, string> = {
   copy: 'M8 8h11v11H8zM5 16H4V4h12v1',
   'arrow-down': 'M12 5v14M6 13l6 6 6-6',
   moon: 'M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z',
-  sun: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1'
+  sun: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1',
+  edit: 'M4 20h4L19 9l-4-4L4 16zM14.5 5.5l4 4',
+  trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5'
 }
 
 export function Icon({ name, size = 18, className }: IconProps) {

@@ -22,7 +22,6 @@ import {
   type MeetingStatus,
   type MeetingSummary,
   type MeetingTask,
-  type MeetingTaskStatus,
   type ModelRecord,
   type ProviderConfig
 } from '@shared/types'
@@ -68,20 +67,28 @@ import {
   beginMeetingMessage,
   clearMeetingFinalReport,
   coordinatorAgent,
+  createRequestTask,
   createTaskClaims,
+  findClaimConflict,
   getMeetingDetail,
+  listAgentTodos,
+  listMeetingTasks,
   markMeetingDeliveriesProcessed,
   meetingParticipants,
   meetingSessionId,
   meetingSummary,
+  meetingTask,
   meetingTitle,
   recordMeetingTurn,
   recordMeetingUsage,
   releaseAllActiveClaims,
+  releaseTasksWaitingOn,
   releaseTaskClaims,
+  replaceAgentTodos,
   setMeetingBuildState,
   setMeetingFinalReport,
   setMeetingStatus,
+  setTaskWaiting,
   transitionMeetingTask,
   updateMeetingMessage,
   updateMeetingUsage
@@ -121,6 +128,7 @@ type BuildContext = {
   stopSignalReason: () => 'user' | 'paused'
   leaseId: string
   checkpoint: MeetingCheckpoint
+  agentLocks: Map<string, Promise<void>>
 }
 
 function defaultCheckpoint(): MeetingCheckpoint {
@@ -157,6 +165,8 @@ type TurnResult = {
   cancelled: boolean
   toolTraces: ChatToolTrace[]
   durationMs: number
+  recoveredFiles: number
+  usedWrite: boolean
 }
 
 type ReviewResult = {
@@ -175,6 +185,31 @@ function emit(sender: WebContents, event: MeetingEvent): void {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withAgentLock<T>(
+  context: BuildContext,
+  agentId: string,
+  run: () => Promise<T>
+): Promise<T> {
+  const previous = context.agentLocks.get(agentId)
+  let release: () => void = () => undefined
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const chained = previous ? previous.then(() => current) : current
+  context.agentLocks.set(agentId, chained)
+  if (previous) {
+    await previous
+  }
+  try {
+    return await run()
+  } finally {
+    release()
+    if (context.agentLocks.get(agentId) === chained) {
+      context.agentLocks.delete(agentId)
+    }
+  }
 }
 
 function clampText(value: string, limit: number): string {
@@ -332,7 +367,33 @@ function reviewResult(text: string): ReviewResult {
 }
 
 const FILE_BLOCK_PATTERN =
-  /(?:^|\n)\s*(?:\*\*)?File(?:\*\*)?\s*:\s*`?([^\n`]+?)`?\s*\n```[^\n]*\n([\s\S]*?)```/g
+  /(?:^|\n)[ \t]*(?:#{1,6}[ \t]*|\/\/[ \t]*|<!--[ \t]*)?(?:\*\*)?(?:File|Path|Filename)(?:\*\*)?[ \t]*:[ \t]*`?([^\n`]+?)`?[ \t]*(?:-->)?[ \t]*\n[ \t]*```[^\n]*\n([\s\S]*?)```/gi
+
+const WRITE_TOOLS = new Set([
+  'write_file',
+  'patch_file',
+  'edit_file',
+  'apply_patch',
+  'delete_path',
+  'move_path'
+])
+
+function usedWriteTool(traces: ChatToolTrace[]): boolean {
+  return traces.some((trace) => trace.status === 'done' && WRITE_TOOLS.has(trace.toolName))
+}
+
+function usedCommandTool(traces: ChatToolTrace[]): boolean {
+  return traces.some((trace) => trace.status === 'done' && trace.toolName === 'run_command')
+}
+
+function displayContent(text: string, wroteFiles: boolean): string {
+  if (!wroteFiles) {
+    return text
+  }
+  return text.replace(/```[\s\S]*?```/g, (block) =>
+    block.length > 700 ? '\n[code written to the project files]\n' : block
+  )
+}
 
 function persistFilesFromResponse(input: {
   sessionId: string
@@ -419,8 +480,11 @@ function toolBundleFor(input: {
   sessionId: string
   meetingId: string
   taskId: string | null
+  task: MeetingTask | null
+  round: number
   turnId: string
   sender: WebContents
+  onTaskChanged?: (task: MeetingTask) => void
 }): AgentToolBundle {
   const team = getCurrentTeamConfig()
   if (!team) {
@@ -466,6 +530,119 @@ function toolBundleFor(input: {
         stream,
         text
       })
+    },
+    readTodos: () => listAgentTodos(input.meetingId, input.agent.id),
+    writeTodos: (items: Array<{ content: string; status?: 'pending' | 'in_progress' | 'done' | 'blocked' }>) => {
+      const todos = replaceAgentTodos({
+        meetingId: input.meetingId,
+        agentId: input.agent.id,
+        taskId: input.taskId,
+        items
+      })
+      emit(input.sender, {
+        type: 'todo',
+        meetingId: input.meetingId,
+        agentId: input.agent.id,
+        todos,
+        meeting: meetingSummary(input.meetingId)
+      })
+      return todos
+    },
+    postMessage: (message: {
+      text: string
+      targetAgentId?: string | null
+      kind?: 'message' | 'notify' | 'question'
+    }) => {
+      const saved = appendMeetingMessage({
+        meetingId: input.meetingId,
+        senderType: 'agent',
+        senderAgentId: input.agent.id,
+        senderName: input.agent.name,
+        targetAgentId: message.targetAgentId ?? null,
+        kind: message.kind ?? 'message',
+        content: message.text,
+        metadata: { phase: 'build', round: input.round, status: 'done' }
+      })
+      emit(input.sender, {
+        type: 'message',
+        meetingId: input.meetingId,
+        message: saved,
+        meeting: meetingSummary(input.meetingId)
+      })
+      return saved
+    },
+    requestFromAgent: (request: {
+      targetAgentId: string
+      title: string
+      description: string
+      acceptanceCriteria?: string
+      fileGlobs?: string[]
+      priority?: number
+    }) => {
+      if (!input.task) {
+        throw new Error('Start a task before requesting work from another agent.')
+      }
+      if (request.targetAgentId === input.agent.id) {
+        throw new Error('You cannot request work from yourself.')
+      }
+      const created = createRequestTask({
+        meetingId: input.meetingId,
+        requestedByAgentId: input.agent.id,
+        targetAgentId: request.targetAgentId,
+        title: request.title,
+        description: request.description,
+        acceptanceCriteria: request.acceptanceCriteria ?? null,
+        fileGlobs: request.fileGlobs ?? [],
+        parentTaskId: input.task.id,
+        priority: request.priority ?? 1
+      })
+      const current = meetingTask(input.task.id)
+      const waiting = setTaskWaiting({
+        taskId: current.id,
+        waitingOnTaskIds: [...current.waitingOnTaskIds, created.id],
+        note: `Waiting for ${request.targetAgentId} to complete: ${created.title}`
+      })
+      const saved = appendMeetingMessage({
+        meetingId: input.meetingId,
+        senderType: 'agent',
+        senderAgentId: input.agent.id,
+        senderName: input.agent.name,
+        targetAgentId: request.targetAgentId,
+        kind: 'request',
+        content: `@${request.targetAgentId}: I need "${created.title}" built by you. ${request.description}`,
+        metadata: {
+          phase: 'build',
+          round: input.round,
+          status: 'done',
+          requestTaskId: created.id,
+          requestFromAgentId: input.agent.id,
+          waitingOnTaskIds: [created.id]
+        }
+      })
+      emit(input.sender, {
+        type: 'task',
+        meetingId: input.meetingId,
+        task: created,
+        meeting: meetingSummary(input.meetingId)
+      })
+      emit(input.sender, {
+        type: 'task',
+        meetingId: input.meetingId,
+        task: waiting,
+        meeting: meetingSummary(input.meetingId)
+      })
+      emit(input.sender, {
+        type: 'message',
+        meetingId: input.meetingId,
+        message: saved,
+        meeting: meetingSummary(input.meetingId)
+      })
+      input.onTaskChanged?.(waiting)
+      return {
+        taskId: created.id,
+        title: created.title,
+        targetAgentId: request.targetAgentId
+      }
     }
   }
   return mergeToolBundles(
@@ -519,12 +696,26 @@ async function runBuildTurn(input: {
         sessionId: context.sessionId,
         meetingId: context.meetingId,
         taskId: task?.id ?? null,
+        task,
+        round,
         turnId,
-        sender: context.sender
+        sender: context.sender,
+        onTaskChanged: (updated) => {
+          context.tasks = context.tasks.map((entry) =>
+            entry.id === updated.id ? updated : entry
+          )
+        }
       })
     : { tools: {}, definitions: [], names: [], warnings: [] }
   const toolsAvailable = withTools && toolBundle.names.length > 0
   const allMessages = getMeetingDetail(context.meetingId).messages
+  const teamChannelText = transcript(
+    allMessages.filter((message) =>
+      ['message', 'request', 'notify', 'question', 'recovery'].includes(message.kind)
+    ),
+    14_000
+  )
+  const todos = listAgentTodos(context.meetingId, agent.id)
   markMeetingDeliveriesProcessed(context.meetingId, agent.id)
   const prompt = compileBuildPrompt({
     agent,
@@ -540,7 +731,8 @@ async function runBuildTurn(input: {
         maxTokens: 300_000,
         maxCostUsd: 2,
         maxToolStepsPerTurn: 8,
-        maxReviewCycles: 2
+        maxReviewCycles: 2,
+        maxConcurrentAgents: 4
       },
       permissions: {
         autoWriteInsideRepo: true,
@@ -561,6 +753,9 @@ async function runBuildTurn(input: {
     plan: context.plan,
     claims,
     historyText: transcript(allMessages),
+    teamChannelText,
+    todos,
+    maxConcurrentAgents: context.budget.maxConcurrentAgents ?? 4,
     memory,
     toolsAvailable,
     toolNames: toolBundle.names,
@@ -607,10 +802,10 @@ async function runBuildTurn(input: {
       messages: [{ role: 'user', content: userText }],
       maxOutputTokens:
         phase === 'report'
-          ? Math.min(model.maxOutputTokens ?? 4_000, 4_000)
+          ? Math.min(model.maxOutputTokens ?? 6_000, 6_000)
           : phase === 'review'
-            ? Math.min(model.maxOutputTokens ?? 3_000, 3_000)
-            : Math.min(model.maxOutputTokens ?? 16_000, 16_000),
+            ? Math.min(model.maxOutputTokens ?? 4_000, 4_000)
+            : Math.min(model.maxOutputTokens ?? 32_000, 32_000),
       temperature: Math.min(Math.max(agent.model?.temperature ?? 0.2, 0), 2),
       maxRetries: 0,
       timeout: 180_000,
@@ -686,22 +881,21 @@ async function runBuildTurn(input: {
     }
 
     const durationMs = Date.now() - startedAt
-    const content = fullText.trim() || (context.controller.signal.aborted ? 'Stopped.' : 'No response.')
-    const usedWriteTool = toolTraces.some(
-      (trace) =>
-        trace.status === 'done' &&
-        ['write_file', 'patch_file', 'delete_path', 'move_path'].includes(trace.toolName)
-    )
-    if (phase === 'build' && !context.controller.signal.aborted && !usedWriteTool) {
-      persistFilesFromResponse({
+    const wroteWithTool = usedWriteTool(toolTraces)
+    const rawContent =
+      fullText.trim() || (context.controller.signal.aborted ? 'Stopped.' : 'No response.')
+    let recoveredFiles = 0
+    if (phase === 'build' && !context.controller.signal.aborted && !wroteWithTool) {
+      recoveredFiles = persistFilesFromResponse({
         sessionId: context.sessionId,
         meetingId: context.meetingId,
         taskId: task?.id ?? null,
         turnId,
         agentId: agent.id,
-        text: content
+        text: rawContent
       })
     }
+    const content = displayContent(rawContent, wroteWithTool || recoveredFiles > 0)
     const message = updateMeetingMessage({
       messageId: streaming.id,
       content,
@@ -767,7 +961,9 @@ async function runBuildTurn(input: {
       usage,
       cancelled: context.controller.signal.aborted,
       toolTraces,
-      durationMs
+      durationMs,
+      recoveredFiles,
+      usedWrite: wroteWithTool || recoveredFiles > 0
     }
   } catch (error) {
     const durationMs = Date.now() - startedAt
@@ -819,7 +1015,9 @@ async function runBuildTurn(input: {
         usage,
         cancelled: true,
         toolTraces,
-        durationMs
+        durationMs,
+        recoveredFiles: 0,
+        usedWrite: false
       }
     }
     throw new Error(message)
@@ -871,70 +1069,6 @@ function qaAgent(agents: AgentConfig[], coordinator: AgentConfig): AgentConfig {
   )
 }
 
-function orderTasks(tasks: MeetingTask[]): MeetingTask[] {
-  const byTitle = new Map(tasks.map((task) => [task.title, task]))
-  const byId = new Map(tasks.map((task) => [task.id, task]))
-  const remaining = new Set(tasks.map((task) => task.id))
-  const ordered: MeetingTask[] = []
-  let guard = 0
-  while (remaining.size > 0 && guard < tasks.length * 3) {
-    guard += 1
-    let progressed = false
-    for (const task of tasks) {
-      if (!remaining.has(task.id)) {
-        continue
-      }
-      const dependencies = task.dependsOn
-        .map((dependency) => byTitle.get(dependency) ?? byId.get(dependency))
-        .filter((dependency): dependency is MeetingTask => Boolean(dependency))
-      const ready = dependencies.every(
-        (dependency) => dependency.status === 'done' || !remaining.has(dependency.id)
-      )
-      if (ready) {
-        ordered.push(task)
-        remaining.delete(task.id)
-        progressed = true
-      }
-    }
-    if (!progressed) {
-      break
-    }
-  }
-  for (const task of tasks) {
-    if (remaining.has(task.id)) {
-      ordered.push(task)
-    }
-  }
-  return ordered
-}
-
-function emitTask(context: BuildContext, task: MeetingTask): void {
-  emit(context.sender, {
-    type: 'task',
-    meetingId: context.meetingId,
-    task,
-    meeting: meetingSummary(context.meetingId)
-  })
-}
-
-function transition(
-  context: BuildContext,
-  task: MeetingTask,
-  status: MeetingTaskStatus,
-  input: { agentId?: string | null; note?: string; type?: string; incrementReview?: boolean } = {}
-): MeetingTask {
-  const updated = transitionMeetingTask({
-    taskId: task.id,
-    status,
-    agentId: input.agentId,
-    note: input.note,
-    type: input.type,
-    incrementReview: input.incrementReview
-  })
-  context.tasks = context.tasks.map((entry) => (entry.id === updated.id ? updated : entry))
-  emitTask(context, updated)
-  return updated
-}
 
 function buildReport(input: {
   context: BuildContext
@@ -1100,15 +1234,446 @@ function stopCurrentBuild(context: BuildContext, reason: 'user' | 'paused'): voi
   })
 }
 
+async function runImplementerTurn(input: {
+  context: BuildContext
+  task: MeetingTask
+  agent: AgentConfig
+  userText: string
+  round: number
+}): Promise<TurnResult | null> {
+  const { context, task, agent } = input
+  createTaskClaims({
+    meetingId: context.meetingId,
+    task,
+    agent
+  })
+  try {
+    const turn = await withAgentLock(context, agent.id, () =>
+      runBuildTurn({
+        context,
+        agent,
+        phase: 'build',
+        round: input.round,
+        kind: 'build',
+        task,
+        withTools: true,
+        userText: input.userText
+      })
+    )
+    addUsage(context, turn, input.round)
+    return turn.cancelled ? null : turn
+  } finally {
+    releaseTaskClaims(context.meetingId, task.id)
+  }
+}
+
+async function runReviewerTurn(input: {
+  context: BuildContext
+  task: MeetingTask
+  reviewer: AgentConfig
+  reviewRound: number
+}): Promise<TurnResult | null> {
+  const { context, task, reviewer } = input
+  createTaskClaims({
+    meetingId: context.meetingId,
+    task,
+    agent: reviewer,
+    globs: reviewer.permissions.writeGlobs
+  })
+  try {
+    const turn = await withAgentLock(context, reviewer.id, () =>
+      runBuildTurn({
+        context,
+        agent: reviewer,
+        phase: 'review',
+        round: 2 + input.reviewRound,
+        kind: 'review',
+        task,
+        withTools: true,
+        reviewRound: input.reviewRound,
+        userText: `Review this completed task and return the required JSON review.\n\nTask: ${task.title}\n${task.description}\n\nAcceptance: ${task.acceptanceCriteria ?? 'not supplied'}`
+      })
+    )
+    addUsage(context, turn, 2 + input.reviewRound)
+    return turn.cancelled ? null : turn
+  } finally {
+    releaseTaskClaims(context.meetingId, task.id)
+  }
+}
+
+function notifyTeam(
+  context: BuildContext,
+  agent: AgentConfig,
+  content: string,
+  kind = 'notify'
+): void {
+  const message = appendMeetingMessage({
+    meetingId: context.meetingId,
+    senderType: 'agent',
+    senderAgentId: agent.id,
+    senderName: agent.name,
+    targetAgentId: null,
+    kind,
+    content,
+    metadata: { phase: 'build', round: 1, status: 'done' }
+  })
+  emit(context.sender, {
+    type: 'message',
+    meetingId: context.meetingId,
+    message,
+    meeting: meetingSummary(context.meetingId)
+  })
+}
+
+function taskFiles(context: BuildContext, taskId: string): string[] {
+  return [
+    ...new Set(
+      listChanges(context.sessionId, 500)
+        .filter((change) => change.taskId === taskId && change.path)
+        .map((change) => change.path as string)
+    )
+  ]
+}
+
+function completeTask(context: BuildContext, task: MeetingTask, agent: AgentConfig): void {
+  const done = transitionMeetingTask({
+    taskId: task.id,
+    status: 'done',
+    agentId: agent.id,
+    note: 'Task approved and completed.',
+    type: 'approved'
+  })
+  context.tasks = context.tasks.map((entry) => (entry.id === done.id ? done : entry))
+  context.checkpoint.completedTaskIds = [
+    ...new Set([...context.checkpoint.completedTaskIds, done.id])
+  ]
+  saveCheckpoint(context, { taskId: done.id, phase: 'build' })
+  emit(context.sender, {
+    type: 'task',
+    meetingId: context.meetingId,
+    task: done,
+    meeting: meetingSummary(context.meetingId)
+  })
+  const files = taskFiles(context, done.id)
+  notifyTeam(
+    context,
+    agent,
+    `Completed "${done.title}".${files.length > 0 ? ` Files: ${files.join(', ')}.` : ''} Notifying the Coordinator.`,
+    'notify'
+  )
+  const released = releaseTasksWaitingOn(context.meetingId, done.id)
+  for (const waiting of released) {
+    context.tasks = context.tasks.map((entry) =>
+      entry.id === waiting.id ? waiting : entry
+    )
+    emit(context.sender, {
+      type: 'task',
+      meetingId: context.meetingId,
+      task: waiting,
+      meeting: meetingSummary(context.meetingId)
+    })
+  }
+  if (released.length > 0) {
+    notifyTeam(
+      context,
+      agent,
+      `Request complete. ${released
+        .map((entry) => `"${entry.title}" (${entry.assigneeAgentId})`)
+        .join(', ')} can resume.`,
+      'notify'
+    )
+  }
+}
+
+function blockTask(
+  context: BuildContext,
+  task: MeetingTask,
+  agent: AgentConfig,
+  error: unknown
+): void {
+  const note = error instanceof Error ? error.message : String(error)
+  try {
+    const blocked = transitionMeetingTask({
+      taskId: task.id,
+      status: 'blocked',
+      agentId: agent.id,
+      note,
+      type: 'failed'
+    })
+    context.tasks = context.tasks.map((entry) =>
+      entry.id === blocked.id ? blocked : entry
+    )
+    emit(context.sender, {
+      type: 'task',
+      meetingId: context.meetingId,
+      task: blocked,
+      meeting: meetingSummary(context.meetingId)
+    })
+    notifyTeam(
+      context,
+      agent,
+      `Blocked "${blocked.title}": ${note}`,
+      'notify'
+    )
+  } catch (transitionError) {
+    log.warn('Could not mark a Build task blocked', {
+      meetingId: context.meetingId,
+      taskId: task.id,
+      error: transitionError
+    })
+  }
+}
+
+async function runTaskPipeline(input: {
+  context: BuildContext
+  taskId: string
+  agents: AgentConfig[]
+  coordinator: AgentConfig
+  reviewer: AgentConfig
+}): Promise<void> {
+  const { context, agents, coordinator, reviewer } = input
+  const task = meetingTask(input.taskId)
+  if (['done', 'blocked', 'waiting'].includes(task.status)) {
+    return
+  }
+  const implementer = agentForTask(agents, task, coordinator)
+  let working = task
+  let reviewCycle = working.reviewCycles
+  const startedInReview =
+    working.status === 'review' || working.status === 'changes_requested'
+
+  try {
+    if (working.status === 'changes_requested') {
+      const priorReview = [...context.reviewResults]
+        .reverse()
+        .find((entry) => entry.taskId === working.id)
+      const issues = priorReview?.issues ?? [
+        'Resume the requested fix from the saved review checkpoint.'
+      ]
+      const fix = await runImplementerTurn({
+        context,
+        task: working,
+        agent: implementer,
+        round: 2 + reviewCycle,
+        userText: `QA requested changes. Fix only these issues, inside the project.\n\nTask: ${working.title}\n${issues.map((issue) => `- ${issue}`).join('\n')}`
+      })
+      if (!fix) {
+        return
+      }
+      if (meetingTask(working.id).status === 'waiting') {
+        return
+      }
+      working = transitionMeetingTask({
+        taskId: working.id,
+        status: 'review',
+        agentId: reviewer.id,
+        note: 'Resumed after the requested fix.',
+        type: 'review-start'
+      })
+    } else if (!startedInReview) {
+      working =
+        working.status === 'in_progress'
+          ? working
+          : transitionMeetingTask({
+              taskId: working.id,
+              status: 'in_progress',
+              agentId: implementer.id,
+              note: `${implementer.name} started the task.`,
+              type: 'start'
+            })
+      context.checkpoint.currentTaskId = working.id
+      context.checkpoint.reviewCycle = 0
+      saveCheckpoint(context, { taskId: working.id, phase: 'build' })
+      const build = await runImplementerTurn({
+        context,
+        task: working,
+        agent: implementer,
+        round: 1,
+        userText: `Implement this Build task. You have full access inside the project.\n\nTask: ${working.title}\n${working.description}\n\nAcceptance: ${working.acceptanceCriteria ?? 'not supplied'}\n\nIf you need another agent to build something first, call request_from_agent.`
+      })
+      if (!build) {
+        return
+      }
+      if (meetingTask(working.id).status === 'waiting') {
+        return
+      }
+      if (!build.usedWrite && !usedCommandTool(build.toolTraces)) {
+        const repair = await runImplementerTurn({
+          context,
+          task: working,
+          agent: implementer,
+          round: 2,
+          userText: `You answered without calling a write tool and without running a command. Do not paste source code in chat. Call write_file, edit_file, or apply_patch now for every file you described, then run the smallest useful check.`
+        })
+        if (!repair) {
+          return
+        }
+        if (meetingTask(working.id).status === 'waiting') {
+          return
+        }
+        if (!repair.usedWrite && !usedCommandTool(repair.toolTraces)) {
+          throw new Error(
+            'The agent did not create or edit any files and did not run a command. Build stopped this task so it can be retried with a tool-capable model.'
+          )
+        }
+      }
+      working = transitionMeetingTask({
+        taskId: working.id,
+        status: 'review',
+        agentId: reviewer.id,
+        note: `${reviewer.name} is reviewing the task.`,
+        type: 'review-start'
+      })
+    }
+
+    while (reviewCycle < context.budget.maxReviewCycles) {
+      reviewCycle += 1
+      working = meetingTask(working.id)
+      context.checkpoint.currentTaskId = working.id
+      context.checkpoint.reviewCycle = reviewCycle
+      saveCheckpoint(context, { taskId: working.id, phase: 'review', reviewCycle })
+      if (context.controller.signal.aborted) {
+        return
+      }
+      let review: ReviewResult | null = null
+      const reviewTurn = await runReviewerTurn({
+        context,
+        task: working,
+        reviewer,
+        reviewRound: reviewCycle
+      }).catch((error: unknown) => {
+        review = {
+          status: 'changes_requested',
+          summary: error instanceof Error ? error.message : String(error),
+          issues: ['The QA review could not complete.'],
+          testsRun: [],
+          testsPassed: false
+        }
+        return null
+      })
+      if (reviewTurn) {
+        review = reviewResult(reviewTurn.text)
+      }
+      if (!review) {
+        break
+      }
+      context.reviewResults.push({
+        taskId: working.id,
+        taskTitle: working.title,
+        status: review.status,
+        summary: review.summary,
+        issues: review.issues,
+        testsRun: review.testsRun,
+        testsPassed: review.testsPassed
+      })
+      context.checkpoint.reviewResults = context.reviewResults
+      context.checkpoint.reviewCycle = reviewCycle
+      saveCheckpoint(context, { taskId: working.id, phase: 'review', reviewCycle })
+
+      if (review.status === 'approved') {
+        completeTask(context, working, reviewer)
+        return
+      }
+      if (reviewCycle >= context.budget.maxReviewCycles) {
+        working = transitionMeetingTask({
+          taskId: working.id,
+          status: 'blocked',
+          agentId: reviewer.id,
+          note: `Review limit reached. ${review.summary}`,
+          type: 'blocked'
+        })
+        notifyTeam(
+          context,
+          reviewer,
+          `Blocked "${working.title}" after ${reviewCycle} review cycles: ${review.summary}`,
+          'notify'
+        )
+        return
+      }
+      working = transitionMeetingTask({
+        taskId: working.id,
+        status: 'changes_requested',
+        agentId: implementer.id,
+        note: review.issues.join('; ') || review.summary,
+        type: 'changes-requested',
+        incrementReview: true
+      })
+      emit(context.sender, {
+        type: 'task',
+        meetingId: context.meetingId,
+        task: working,
+        meeting: meetingSummary(context.meetingId)
+      })
+      const fix = await runImplementerTurn({
+        context,
+        task: working,
+        agent: implementer,
+        round: 2 + reviewCycle,
+        userText: `QA requested changes. Fix only these issues inside the project.\n\nTask: ${working.title}\n${review.issues.map((issue) => `- ${issue}`).join('\n') || review.summary}`
+      })
+      if (!fix) {
+        return
+      }
+      if (meetingTask(working.id).status === 'waiting') {
+        return
+      }
+      working = transitionMeetingTask({
+        taskId: working.id,
+        status: 'review',
+        agentId: reviewer.id,
+        note: `Review cycle ${reviewCycle + 1}.`,
+        type: 'review-start'
+      })
+    }
+
+    const latest = meetingTask(working.id)
+    if (latest.status !== 'done' && latest.status !== 'blocked' && latest.status !== 'waiting') {
+      blockTask(
+        context,
+        latest,
+        reviewer,
+        new Error('The task did not receive an approved review.')
+      )
+    }
+  } catch (error) {
+    if (context.controller.signal.aborted) {
+      releaseTaskClaims(context.meetingId, task.id)
+      return
+    }
+    blockTask(context, meetingTask(task.id), implementer, error)
+  } finally {
+    releaseTaskClaims(context.meetingId, task.id)
+  }
+}
+
+function refreshTask(context: BuildContext, taskId: string): MeetingTask | null {
+  try {
+    const task = meetingTask(taskId)
+    context.tasks = context.tasks.map((entry) => (entry.id === task.id ? task : entry))
+    return task
+  } catch {
+    return null
+  }
+}
+
+function dependencyTasks(context: BuildContext, task: MeetingTask): MeetingTask[] {
+  return task.dependsOn
+    .map((dependency) =>
+      context.tasks.find((entry) => entry.title === dependency || entry.id === dependency)
+    )
+    .filter((entry): entry is MeetingTask => Boolean(entry))
+}
+
 async function runBuild(context: BuildContext): Promise<void> {
   const agents = meetingParticipants(context.meetingId)
   const coordinator = coordinatorAgent(context.meetingId)
   const reviewer = qaAgent(agents, coordinator)
-  const planTasks = orderTasks(context.tasks)
-  const completedTaskIds = new Set(context.checkpoint.completedTaskIds)
-  if (context.checkpoint.reviewResults.length > 0) {
-    context.reviewResults = context.checkpoint.reviewResults
-  }
+  const maxConcurrent = Math.min(
+    Math.max(context.budget.maxConcurrentAgents ?? 4, 2),
+    Math.max(agents.length, 2)
+  )
+  const running = new Map<string, { agentId: string; promise: Promise<void> }>()
+  let stopped = false
 
   try {
     setMeetingStatus({
@@ -1121,6 +1686,19 @@ async function runBuild(context: BuildContext): Promise<void> {
       type: 'meeting-start',
       meeting: meetingSummary(context.meetingId)
     })
+
+    for (const task of context.tasks) {
+      if (['in_progress', 'review', 'changes_requested'].includes(task.status)) {
+        transitionMeetingTask({
+          taskId: task.id,
+          status: 'queued',
+          note: 'Task re-queued for parallel execution.',
+          type: 'queued'
+        })
+      }
+    }
+    context.tasks = listMeetingTasks(context.meetingId)
+
     appendMeetingMessage({
       meetingId: context.meetingId,
       senderType: 'agent',
@@ -1129,421 +1707,253 @@ async function runBuild(context: BuildContext): Promise<void> {
       targetAgentId: null,
       kind: 'dispatch',
       content: [
-        `Build dispatched with ${planTasks.length} tasks and ${context.budget.maxReviewCycles} review cycles.`,
-        'Tasks run one at a time. Each task gets an active file claim before execution.'
+        `Build dispatched with ${context.tasks.length} tasks.`,
+        `Up to ${maxConcurrent} agents work in parallel.`,
+        'Agents can request work from each other; requests are high priority and the requester waits automatically.',
+        'Only the Coordinator answers the Boss. Team messages are visible to everyone.'
       ].join(' '),
       metadata: { phase: 'build', round: 1, status: 'done' }
     })
+    notifyTeam(
+      context,
+      coordinator,
+      `Team, we are starting in parallel. Max ${maxConcurrent} agents. Post progress, request work when blocked, and notify me when your part is complete.`,
+      'message'
+    )
 
-    let taskIndex = context.checkpoint.taskIndex
-    for (const queued of planTasks) {
-      if (context.controller.signal.aborted) {
-        stopCurrentBuild(context, context.stopSignalReason())
-        return
-      }
-      const current = context.tasks.find((task) => task.id === queued.id) ?? queued
-      if (
-        current.status === 'done' ||
-        current.status === 'blocked' ||
-        completedTaskIds.has(current.id)
-      ) {
-        continue
-      }
-      const dependencies = current.dependsOn
-        .map((dependency) =>
-          context.tasks.find(
-            (task) => task.title === dependency || task.id === dependency
-          )
-        )
-        .filter((task): task is MeetingTask => Boolean(task))
-      const blockedDependency = dependencies.find((task) => task.status !== 'done')
-      if (blockedDependency) {
-        transition(
-          context,
-          current,
-          'blocked',
-          {
-            note: `Blocked by ${blockedDependency.title} (${blockedDependency.status}).`,
-            type: 'blocked'
-          }
-        )
-        continue
-      }
+    while (!context.controller.signal.aborted) {
+      context.tasks = listMeetingTasks(context.meetingId)
 
-      taskIndex += 1
-      const implementer = agentForTask(agents, current, coordinator)
-      const resumeAtReview =
-        context.checkpoint.currentTaskId === current.id &&
-        context.checkpoint.phase === 'review' &&
-        (current.status === 'review' || current.status === 'changes_requested')
-      let working = current
-      let reviewCycle = resumeAtReview ? context.checkpoint.reviewCycle : 0
-      context.checkpoint.taskIndex = taskIndex
-      context.checkpoint.currentTaskId = current.id
-      context.checkpoint.reviewCycle = reviewCycle
-      if (resumeAtReview) {
-        context.checkpoint.phase = 'review'
-        saveCheckpoint(context, {
-          taskId: working.id,
-          phase: 'review',
-          taskIndex,
-          reviewCycle
-        })
-        if (current.status === 'changes_requested') {
-          const priorReview = [...context.reviewResults]
-            .reverse()
-            .find((review) => review.taskId === current.id)
-          const issues = priorReview?.issues ?? [
-            'Resume the requested fix from the saved review checkpoint.'
-          ]
-          try {
-            createTaskClaims({
-              meetingId: context.meetingId,
-              task: working,
-              agent: implementer
-            })
-            const fixTurn = await runBuildTurn({
-              context,
-              agent: implementer,
-              phase: 'build',
-              round: 2 + reviewCycle,
-              kind: 'build',
-              task: working,
-              withTools: true,
-              userText: `QA requested changes before the interruption. Fix only these issues inside the active claim.\n\nTask: ${working.title}\n${issues.map((issue) => `- ${issue}`).join('\n')}`
-            })
-            addUsage(context, fixTurn, 2 + reviewCycle)
-            if (fixTurn.cancelled) {
-              stopCurrentBuild(context, context.stopSignalReason())
-              return
-            }
-          } catch (error) {
-            transition(context, working, 'blocked', {
-              agentId: implementer.id,
-              note: error instanceof Error ? error.message : String(error),
-              type: 'failed'
-            })
-            continue
-          } finally {
-            releaseTaskClaims(context.meetingId, working.id)
-          }
-          working = transition(context, working, 'review', {
-            agentId: reviewer.id,
-            note: `Resumed after the requested fix.`,
-            type: 'review-start'
-          })
+      for (const task of context.tasks) {
+        if (task.status !== 'waiting') {
+          continue
         }
-      } else {
-        working = transition(context, current, 'in_progress', {
-          agentId: implementer.id,
-          note: `${implementer.name} started the task.`,
-          type: 'start'
-        })
-        context.checkpoint.phase = 'build'
-        context.checkpoint.reviewCycle = 0
-        saveCheckpoint(context, {
-          taskId: working.id,
-          phase: 'build',
-          taskIndex
-        })
-
-        try {
-          createTaskClaims({
+        const waits = task.waitingOnTaskIds
+          .map((id) => context.tasks.find((entry) => entry.id === id))
+          .filter((entry): entry is MeetingTask => Boolean(entry))
+        if (waits.some((entry) => entry.status === 'blocked')) {
+          const blocked = transitionMeetingTask({
+            taskId: task.id,
+            status: 'blocked',
+            note: `A requested task failed: ${waits
+              .filter((entry) => entry.status === 'blocked')
+              .map((entry) => entry.title)
+              .join(', ')}`,
+            type: 'blocked'
+          })
+          emit(context.sender, {
+            type: 'task',
             meetingId: context.meetingId,
-            task: working,
-            agent: implementer
-          })
-          const buildTurn = await runBuildTurn({
-            context,
-            agent: implementer,
-            phase: 'build',
-            round: 1,
-            kind: 'build',
-            task: working,
-            withTools: true,
-            userText: `Implement this Build task. Stay inside the active claim.\n\nTask: ${working.title}\n${working.description}\n\nAcceptance: ${working.acceptanceCriteria ?? 'not supplied'}`
-          })
-          addUsage(context, buildTurn, 1)
-          if (buildTurn.cancelled) {
-            stopCurrentBuild(context, context.stopSignalReason())
-            return
-          }
-          if (budgetExceeded(context)) {
-            finishBuild({
-              context,
-              status: 'stopped',
-              stopReason: 'budget',
-              summary: 'Build stopped because a meeting budget limit was reached. Partial work is recorded.',
-              partial: true
-            })
-            return
-          }
-        } catch (error) {
-          releaseTaskClaims(context.meetingId, working.id)
-          transition(context, working, 'blocked', {
-            agentId: implementer.id,
-            note: error instanceof Error ? error.message : String(error),
-            type: 'failed'
+            task: blocked,
+            meeting: meetingSummary(context.meetingId)
           })
           continue
         }
-
-        releaseTaskClaims(context.meetingId, working.id)
-        working = transition(context, working, 'review', {
-          agentId: reviewer.id,
-          note: `${reviewer.name} is reviewing the task.`,
-          type: 'review-start'
-        })
-        context.checkpoint.phase = 'review'
-        saveCheckpoint(context, {
-          taskId: working.id,
-          phase: 'review',
-          taskIndex,
-          reviewCycle
-        })
-      }
-
-      let review: ReviewResult | null = null
-      let approved = false
-
-      while (!approved && reviewCycle < context.budget.maxReviewCycles) {
-        reviewCycle += 1
-        context.checkpoint.reviewCycle = reviewCycle
-        saveCheckpoint(context, {
-          taskId: working.id,
-          phase: 'review',
-          taskIndex,
-          reviewCycle
-        })
-        if (context.controller.signal.aborted) {
-          stopCurrentBuild(context, context.stopSignalReason())
-          return
-        }
-        try {
-          createTaskClaims({
+        if (waits.length === task.waitingOnTaskIds.length && waits.every((entry) => entry.status === 'done')) {
+          const ready = transitionMeetingTask({
+            taskId: task.id,
+            status: 'queued',
+            note: 'The requested work is complete. Task is ready to resume.',
+            type: 'ready'
+          })
+          emit(context.sender, {
+            type: 'task',
             meetingId: context.meetingId,
-            task: working,
-            agent: reviewer,
-            globs: reviewer.permissions.writeGlobs
+            task: ready,
+            meeting: meetingSummary(context.meetingId)
           })
-          const reviewTurn = await runBuildTurn({
-            context,
-            agent: reviewer,
-            phase: 'review',
-            round: 2 + reviewCycle,
-            kind: 'review',
-            task: working,
-            withTools: true,
-            reviewRound: reviewCycle,
-            userText: `Review this completed task and return the required JSON review.\n\nTask: ${working.title}\n${working.description}\n\nAcceptance: ${working.acceptanceCriteria ?? 'not supplied'}`
-          })
-          addUsage(context, reviewTurn, 2 + reviewCycle)
-          if (reviewTurn.cancelled) {
-            stopCurrentBuild(context, context.stopSignalReason())
-            return
-          }
-          review = reviewResult(reviewTurn.text)
-        } catch (error) {
-          review = {
-            status: 'changes_requested',
-            summary: error instanceof Error ? error.message : String(error),
-            issues: ['The QA review could not complete.'],
-            testsRun: [],
-            testsPassed: false
-          }
-        } finally {
-          releaseTaskClaims(context.meetingId, working.id)
         }
-        if (!review) {
-          break
-        }
-        context.reviewResults.push({
-          taskId: working.id,
-          taskTitle: working.title,
-          status: review.status,
-          summary: review.summary,
-          issues: review.issues,
-          testsRun: review.testsRun,
-          testsPassed: review.testsPassed
-        })
-        context.checkpoint.reviewResults = context.reviewResults
-        context.checkpoint.reviewCycle = reviewCycle
-        saveCheckpoint(context, {
-          taskId: working.id,
-          phase: 'review',
-          taskIndex,
-          reviewCycle
-        })
-        if (review.status === 'approved') {
-          approved = true
-          transition(context, working, 'done', {
-            agentId: reviewer.id,
-            note: review.summary,
-            type: 'approved'
-          })
-          completedTaskIds.add(working.id)
-          context.checkpoint.completedTaskIds = [...completedTaskIds]
-          context.checkpoint.currentTaskId = null
-          context.checkpoint.phase = 'build'
-          context.checkpoint.reviewCycle = 0
-          saveCheckpoint(context, {
-            taskId: working.id,
-            phase: 'build',
-            taskIndex
-          })
-          break
-        }
-
-        if (reviewCycle >= context.budget.maxReviewCycles) {
-          transition(context, working, 'blocked', {
-            agentId: reviewer.id,
-            note: `Review limit reached. ${review.summary}`,
-            type: 'blocked'
-          })
-          completedTaskIds.add(working.id)
-          context.checkpoint.completedTaskIds = [...completedTaskIds]
-          context.checkpoint.currentTaskId = null
-          saveCheckpoint(context, {
-            taskId: working.id,
-            phase: 'build',
-            taskIndex
-          })
-          break
-        }
-
-        working = transition(context, working, 'changes_requested', {
-          agentId: implementer.id,
-          note: review.issues.join('; ') || review.summary,
-          type: 'changes-requested',
-          incrementReview: true
-        })
-        if (context.controller.signal.aborted) {
-          stopCurrentBuild(context, context.stopSignalReason())
-          return
-        }
-        try {
-          createTaskClaims({
-            meetingId: context.meetingId,
-            task: working,
-            agent: implementer
-          })
-          const fixTurn = await runBuildTurn({
-            context,
-            agent: implementer,
-            phase: 'build',
-            round: 2 + reviewCycle,
-            kind: 'build',
-            task: working,
-            withTools: true,
-            userText: `QA requested changes. Fix only these issues inside the active claim.\n\nTask: ${working.title}\n${review.issues.map((issue) => `- ${issue}`).join('\n') || review.summary}`
-          })
-          addUsage(context, fixTurn, 2 + reviewCycle)
-          if (fixTurn.cancelled) {
-            stopCurrentBuild(context, context.stopSignalReason())
-            return
-          }
-          if (budgetExceeded(context)) {
-            finishBuild({
-              context,
-              status: 'stopped',
-              stopReason: 'budget',
-              summary: 'Build stopped because a meeting budget limit was reached.',
-              partial: true
-            })
-            return
-          }
-          context.checkpoint.phase = 'review'
-          saveCheckpoint(context, {
-            taskId: working.id,
-            phase: 'review',
-            taskIndex,
-            reviewCycle
-          })
-        } catch (error) {
-          transition(context, working, 'blocked', {
-            agentId: implementer.id,
-            note: error instanceof Error ? error.message : String(error),
-            type: 'failed'
-          })
-          break
-        } finally {
-          releaseTaskClaims(context.meetingId, working.id)
-        }
-        working = transition(context, working, 'review', {
-          agentId: reviewer.id,
-          note: `Review cycle ${reviewCycle + 1}.`,
-          type: 'review-start'
-        })
       }
 
-      if (!approved) {
-        const latest = context.tasks.find((task) => task.id === working.id)
-        if (latest?.status !== 'blocked') {
-          transition(context, latest ?? working, 'blocked', {
-            agentId: reviewer.id,
-            note: 'The task did not receive an approved review.',
-            type: 'blocked'
-          })
-        }
-        completedTaskIds.add(working.id)
-        context.checkpoint.completedTaskIds = [...completedTaskIds]
-        context.checkpoint.currentTaskId = null
-        saveCheckpoint(context, { taskId: working.id, phase: 'build', taskIndex })
+      context.tasks = listMeetingTasks(context.meetingId)
+      const open = context.tasks.filter(
+        (task) => task.status !== 'done' && task.status !== 'blocked'
+      )
+      if (open.length === 0 && running.size === 0) {
+        break
       }
+
       if (budgetExceeded(context)) {
         finishBuild({
           context,
           status: 'stopped',
           stopReason: 'budget',
-          summary: 'Build stopped because a meeting budget limit was reached.',
+          summary: 'Build stopped because a meeting budget limit was reached. Partial work is recorded.',
           partial: true
         })
-        return
+        stopped = true
+        break
       }
+
+      const busyAgents = new Set([...running.values()].map((entry) => entry.agentId))
+      const candidates = context.tasks
+        .filter((task) => task.status === 'queued')
+        .sort((a, b) => {
+          const requestA = a.requestKind === 'request' ? 0 : 1
+          const requestB = b.requestKind === 'request' ? 0 : 1
+          return requestA - requestB || a.priority - b.priority || a.createdAt - b.createdAt
+        })
+
+      for (const candidate of candidates) {
+        if (context.controller.signal.aborted) {
+          break
+        }
+        if (running.size >= maxConcurrent) {
+          break
+        }
+        const agentId = candidate.assigneeAgentId ?? coordinator.id
+        if (busyAgents.has(agentId)) {
+          continue
+        }
+        const dependencies = dependencyTasks(context, candidate)
+        const pending = dependencies.filter((entry) => entry.status !== 'done')
+        if (pending.length > 0) {
+          const blocked = pending.filter((entry) => entry.status === 'blocked')
+          if (blocked.length > 0) {
+            const updated = transitionMeetingTask({
+              taskId: candidate.id,
+              status: 'blocked',
+              note: `Blocked by ${blocked.map((entry) => entry.title).join(', ')}.`,
+              type: 'blocked'
+            })
+            emit(context.sender, {
+              type: 'task',
+              meetingId: context.meetingId,
+              task: updated,
+              meeting: meetingSummary(context.meetingId)
+            })
+          } else {
+            const updated = setTaskWaiting({
+              taskId: candidate.id,
+              waitingOnTaskIds: pending.map((entry) => entry.id),
+              note: `Waiting for ${pending.map((entry) => entry.title).join(', ')}.`
+            })
+            emit(context.sender, {
+              type: 'task',
+              meetingId: context.meetingId,
+              task: updated,
+              meeting: meetingSummary(context.meetingId)
+            })
+          }
+          continue
+        }
+
+        const agent = agentForTask(agents, candidate, coordinator)
+        const globs =
+          candidate.fileGlobs.length > 0
+            ? candidate.fileGlobs
+            : agent.permissions.writeGlobs
+        const conflict =
+          running.size > 0
+            ? findClaimConflict({
+                meetingId: context.meetingId,
+                agentId: agent.id,
+                taskId: candidate.id,
+                globs
+              })
+            : null
+        if (conflict) {
+          log.info('Task waits for a file claim', {
+            meetingId: context.meetingId,
+            taskId: candidate.id,
+            conflict
+          })
+          continue
+        }
+
+        const promise = runTaskPipeline({
+          context,
+          taskId: candidate.id,
+          agents,
+          coordinator,
+          reviewer
+        })
+          .catch((error: unknown) => {
+            blockTask(context, meetingTask(candidate.id), agent, error)
+          })
+          .finally(() => {
+            running.delete(candidate.id)
+            refreshTask(context, candidate.id)
+          })
+        running.set(candidate.id, { agentId: agent.id, promise })
+        busyAgents.add(agent.id)
+        emit(context.sender, {
+          type: 'meeting-update',
+          meeting: meetingSummary(context.meetingId)
+        })
+      }
+
+      if (running.size === 0) {
+        const stuck = context.tasks.filter(
+          (task) => task.status === 'waiting' || task.status === 'queued'
+        )
+        for (const task of stuck) {
+          const agent = agentForTask(agents, task, coordinator)
+          blockTask(
+            context,
+            task,
+            agent,
+            new Error(
+              'No runnable work remains. A dependency or file claim could not be resolved.'
+            )
+          )
+        }
+        if (stuck.length === 0) {
+          break
+        }
+        continue
+      }
+
+      await Promise.race([...running.values()].map((entry) => entry.promise))
     }
 
     if (context.controller.signal.aborted) {
       stopCurrentBuild(context, context.stopSignalReason())
-      return
+      stopped = true
     }
 
-    setMeetingStatus({ meetingId: context.meetingId, status: 'reporting' })
-    context.checkpoint.phase = 'report'
-    context.checkpoint.reportStarted = true
-    context.checkpoint.currentTaskId = null
-    saveCheckpoint(context, { phase: 'report' })
-    let reportSummary = ''
-    try {
-      const reportTurn = await runBuildTurn({
-        context,
-        agent: coordinator,
-        phase: 'report',
-        round: 10,
-        kind: 'report',
-        task: null,
-        withTools: false,
-        userText: 'Write the final Build report for the Boss from the task board, change log, approvals, and reviews.'
-      })
-      addUsage(context, reportTurn, 10)
-      if (reportTurn.cancelled) {
-        stopCurrentBuild(context, context.stopSignalReason())
-        return
+    if (!stopped) {
+      await Promise.allSettled([...running.values()].map((entry) => entry.promise))
+      context.tasks = listMeetingTasks(context.meetingId)
+      setMeetingStatus({ meetingId: context.meetingId, status: 'reporting' })
+      context.checkpoint.phase = 'report'
+      context.checkpoint.reportStarted = true
+      context.checkpoint.currentTaskId = null
+      saveCheckpoint(context, { phase: 'report' })
+      let reportSummary = ''
+      try {
+        const reportTurn = await runBuildTurn({
+          context,
+          agent: coordinator,
+          phase: 'report',
+          round: 10,
+          kind: 'report',
+          task: null,
+          withTools: false,
+          userText:
+            'Write the final Build report for the Boss from the parallel task board, team requests, change log, approvals, and reviews.'
+        })
+        addUsage(context, reportTurn, 10)
+        if (reportTurn.cancelled) {
+          stopCurrentBuild(context, context.stopSignalReason())
+          return
+        }
+        reportSummary = reportTurn.text
+      } catch (error) {
+        reportSummary = `Build finished but the Coordinator report could not be generated: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       }
-      reportSummary = reportTurn.text
-    } catch (error) {
-      reportSummary = `Build finished but the Coordinator report could not be generated: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    }
 
-    const blocked = context.tasks.filter((task) => task.status === 'blocked').length
-    finishBuild({
-      context,
-      status: blocked > 0 ? 'stopped' : 'completed',
-      stopReason: blocked > 0 ? 'blocked' : 'completed',
-      summary: reportSummary,
-      partial: blocked > 0
-    })
+      const blocked = context.tasks.filter((task) => task.status === 'blocked').length
+      finishBuild({
+        context,
+        status: blocked > 0 ? 'stopped' : 'completed',
+        stopReason: blocked > 0 ? 'blocked' : 'completed',
+        summary: reportSummary,
+        partial: blocked > 0
+      })
+    }
   } catch (error) {
     if (!getCurrentProject()) {
       log.info('Build stopped because the project closed', {
@@ -1594,6 +2004,25 @@ export function startBuildEngine(
   const meeting = meetingSummary(meetingId)
   if (meeting.mode !== 'build') {
     throw new AppError('MEETING_MODE_INVALID', 'This is not a Build meeting.')
+  }
+  const meetingDetail = getMeetingDetail(meetingId)
+  const settings = loadSettings()
+  const requiredAgents = new Set(
+    meetingDetail.tasks
+      .map((task) => task.assigneeAgentId)
+      .filter((id): id is string => Boolean(id))
+  )
+  requiredAgents.add(meetingDetail.meeting.coordinatorAgentId)
+  requiredAgents.add(qaAgent(meetingParticipants(meetingId), coordinatorAgent(meetingId)).id)
+  const missingTools = meetingParticipants(meetingId)
+    .filter((agent) => requiredAgents.has(agent.id))
+    .filter((agent) => !agentCanUseTools(agent, settings))
+    .map((agent) => agent.name)
+  if (missingTools.length > 0) {
+    throw new AppError(
+      'AGENT_TOOLS_REQUIRED',
+      `Assign a tool-capable model to: ${missingTools.join(', ')}. Their current model cannot call file, shell, or coordination tools, so Build cannot create files.`
+    )
   }
   const interrupted = ['building', 'reviewing', 'reporting'].includes(meeting.status)
   if (
@@ -1646,7 +2075,8 @@ export function startBuildEngine(
     processIds: new Set<string>(),
     stopSignalReason: () => (active.stopReason ? active.stopReason : 'user'),
     leaseId,
-    checkpoint
+    checkpoint,
+    agentLocks: new Map<string, Promise<void>>()
   }
   void runBuild(context)
   return meetingSummary(meetingId)

@@ -53,7 +53,8 @@ const teamConfigSchema = z.object({
     maxTokens: z.number().int().positive(),
     maxCostUsd: z.number().positive(),
     maxToolStepsPerTurn: z.number().int().positive(),
-    maxReviewCycles: z.number().int().positive()
+    maxReviewCycles: z.number().int().positive(),
+    maxConcurrentAgents: z.number().int().min(1).max(8).default(4)
   }),
   permissions: z.object({
     autoWriteInsideRepo: z.boolean(),
@@ -229,7 +230,8 @@ export function createDefaultTeam(bossName: string): TeamConfig {
       maxTokens: 300000,
       maxCostUsd: 2,
       maxToolStepsPerTurn: 8,
-      maxReviewCycles: 2
+      maxReviewCycles: 2,
+      maxConcurrentAgents: 4
     },
     permissions: {
       autoWriteInsideRepo: true,

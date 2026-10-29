@@ -13,6 +13,8 @@ import {
 
 const log = createLogger('recovery')
 
+const processStartedAt = Date.now()
+
 let lastReport: RecoveryReport | null = null
 
 function database() {
@@ -86,12 +88,22 @@ function cancelStaleApprovals(items: RecoveryItem[]): number {
   const sessions = new Set(items.map((item) => item.sessionId).filter(Boolean))
   let cancelled = 0
   const pending = db
-    .prepare("SELECT id, meeting_id, session_id FROM approvals WHERE status = 'pending'")
-    .all() as Array<{ id: string; meeting_id: string | null; session_id: string | null }>
+    .prepare(
+      "SELECT id, meeting_id, session_id, created_at FROM approvals WHERE status = 'pending'"
+    )
+    .all() as Array<{
+    id: string
+    meeting_id: string | null
+    session_id: string | null
+    created_at: number
+  }>
   const cancel = db.prepare(
     "UPDATE approvals SET status = 'cancelled', decision_note = ?, decided_at = ? WHERE id = ? AND status = 'pending'"
   )
   for (const approval of pending) {
+    if (approval.created_at >= processStartedAt) {
+      continue
+    }
     const stale =
       (approval.meeting_id && meetings.has(approval.meeting_id)) ||
       (approval.session_id && sessions.has(approval.session_id)) ||

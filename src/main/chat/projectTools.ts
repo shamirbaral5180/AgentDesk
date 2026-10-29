@@ -4,11 +4,14 @@ import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import type {
   AgentConfig,
+  AgentTodo,
+  AgentTodoStatus,
   ApprovalActionType,
   ApprovalRisk,
   ApprovalScope,
   ChatMode,
   ChatToolDefinition,
+  MeetingMessage,
   ProjectPermissionDefaults
 } from '@shared/types'
 import {
@@ -24,8 +27,8 @@ import { hashBuffer, recordChange, snapshotFile } from '../changes/changeService
 import { memorySummaryForTool } from '../memory/memoryService'
 import { isPathInside, safeJoin, writeFileAtomic } from '../utils/fs'
 import {
-  agentScopeDecision,
   isSensitiveFileName,
+  matchesAnyGlob,
   normalizeRelativePath,
   projectRelativeDisplay,
   resolveCommandCwd,
@@ -90,6 +93,23 @@ export type AgentToolRuntime = {
     stream: 'stdout' | 'stderr' | 'system',
     text: string
   ) => void
+  postMessage?: (input: {
+    text: string
+    targetAgentId?: string | null
+    kind?: 'message' | 'notify' | 'question'
+  }) => MeetingMessage | null
+  requestFromAgent?: (input: {
+    targetAgentId: string
+    title: string
+    description: string
+    acceptanceCriteria?: string
+    fileGlobs?: string[]
+    priority?: number
+  }) => { taskId: string; title: string; targetAgentId: string } | null
+  readTodos?: () => AgentTodo[]
+  writeTodos?: (
+    items: Array<{ content: string; status?: AgentTodoStatus }>
+  ) => AgentTodo[]
 }
 
 export type AgentToolBundle = {
@@ -386,6 +406,198 @@ function searchProject(
   }
 }
 
+function globProject(
+  root: string,
+  input: { pattern: string; limit?: number }
+): Record<string, unknown> {
+  const pattern = normalizeRelative(input.pattern)
+  if (!pattern) {
+    throw new Error('A glob pattern is required.')
+  }
+  const limit = Math.min(Math.max(input.limit ?? 200, 1), 1000)
+  const walked = walkEntries(root, root, 12, 5000)
+  const matches = walked.entries
+    .filter((entry) => entry.type === 'file' && matchesAnyGlob(entry.path, [pattern]))
+    .slice(0, limit)
+    .map((entry) => entry.path)
+  return {
+    pattern,
+    count: matches.length,
+    truncated: walked.truncated || matches.length >= limit,
+    matches
+  }
+}
+
+function grepProject(
+  root: string,
+  input: {
+    pattern: string
+    include?: string
+    caseSensitive?: boolean
+    maxResults?: number
+    contextLines?: number
+  }
+): Record<string, unknown> {
+  const raw = input.pattern
+  if (!raw || raw.length < 1) {
+    throw new Error('A search pattern is required.')
+  }
+  let expression: RegExp
+  try {
+    expression = new RegExp(raw, input.caseSensitive ? 'g' : 'gi')
+  } catch {
+    throw new Error('The pattern is not a valid regular expression.')
+  }
+  const include = input.include ? normalizeRelative(input.include) : null
+  const maxResults = Math.min(Math.max(input.maxResults ?? 40, 1), 120)
+  const contextLines = Math.min(Math.max(input.contextLines ?? 0, 0), 3)
+  const matches: Array<{
+    path: string
+    line: number
+    column: number
+    snippet: string
+  }> = []
+  let filesScanned = 0
+  let truncated = false
+  const queue: string[] = [root]
+  while (queue.length > 0 && filesScanned < MAX_SEARCH_FILES && !truncated) {
+    const current = queue.shift()
+    if (!current) {
+      break
+    }
+    let dirents: fs.Dirent[]
+    try {
+      dirents = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const dirent of dirents) {
+      if (filesScanned >= MAX_SEARCH_FILES) {
+        truncated = true
+        break
+      }
+      if (dirent.isSymbolicLink()) {
+        continue
+      }
+      if (dirent.isDirectory()) {
+        if (IGNORED_DIRS.has(dirent.name) || dirent.name.startsWith('.')) {
+          continue
+        }
+        queue.push(path.join(current, dirent.name))
+        continue
+      }
+      if (!dirent.isFile() || isSensitiveFileName(dirent.name)) {
+        continue
+      }
+      const absolute = path.join(current, dirent.name)
+      const relative = toRelative(root, absolute)
+      if (include && !matchesAnyGlob(relative, [include])) {
+        continue
+      }
+      let stat: fs.Stats
+      try {
+        stat = fs.statSync(absolute)
+      } catch {
+        continue
+      }
+      if (stat.size > MAX_SEARCH_BYTES) {
+        continue
+      }
+      filesScanned += 1
+      let buffer: Buffer
+      try {
+        buffer = fs.readFileSync(absolute)
+      } catch {
+        continue
+      }
+      if (isProbablyBinary(buffer)) {
+        continue
+      }
+      const lines = buffer.toString('utf8').split(/\r?\n/)
+      for (let index = 0; index < lines.length; index += 1) {
+        expression.lastIndex = 0
+        const match = expression.exec(lines[index])
+        if (!match) {
+          continue
+        }
+        const startLine = Math.max(0, index - contextLines)
+        const endLine = Math.min(lines.length - 1, index + contextLines)
+        matches.push({
+          path: relative,
+          line: index + 1,
+          column: match.index + 1,
+          snippet: lines.slice(startLine, endLine + 1).join('\n').trim()
+        })
+        if (matches.length >= maxResults) {
+          truncated = true
+          break
+        }
+      }
+      if (truncated) {
+        break
+      }
+    }
+  }
+  return {
+    pattern: raw,
+    include: include ?? '**/*',
+    filesScanned,
+    truncated,
+    matches
+  }
+}
+
+function applyPatchToText(
+  before: string,
+  patch: string
+): string {
+  const lines = patch.replace(/\r\n/g, '\n').split('\n')
+  let result = before
+  let index = 0
+  while (index < lines.length) {
+    const header = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(lines[index].trim())
+    if (header) {
+      index += 1
+      continue
+    }
+    const hunk = /^@@\s*(.*?)\s*@@/.exec(lines[index])
+    if (!hunk) {
+      index += 1
+      continue
+    }
+    index += 1
+    const removed: string[] = []
+    const added: string[] = []
+    while (index < lines.length && !/^@@\s*(.*?)\s*@@/.test(lines[index])) {
+      const line = lines[index]
+      if (line.startsWith('-')) {
+        removed.push(line.slice(1))
+      } else if (line.startsWith('+')) {
+        added.push(line.slice(1))
+      } else if (line.startsWith(' ')) {
+        removed.push(line.slice(1))
+        added.push(line.slice(1))
+      }
+      index += 1
+    }
+    const oldBlock = removed.join('\n')
+    const newBlock = added.join('\n')
+    if (!oldBlock) {
+      result = `${result.replace(/\s*$/, '')}\n${newBlock}\n`
+      continue
+    }
+    const occurrences = result.split(oldBlock).length - 1
+    if (occurrences === 0) {
+      throw new Error('apply_patch could not find the removed lines. Read the file and retry.')
+    }
+    if (occurrences > 1) {
+      throw new Error('apply_patch matched more than one location. Include more context.')
+    }
+    result = result.replace(oldBlock, newBlock)
+  }
+  return result
+}
+
 function toolEnabled(agent: AgentConfig, names: string[]): boolean {
   return names.some((name) => agent.permissions.tools.includes(name))
 }
@@ -401,17 +613,14 @@ async function approveFileAction(input: {
   runtime: AgentToolRuntime
   permissions: ProjectPermissionDefaults
 }): Promise<void> {
-  const scope = agentScopeDecision(input.agent, input.relativePath)
-  if (scope.inScope && input.permissions.autoWriteInsideRepo) {
+  if (input.permissions.autoWriteInsideRepo) {
     return
   }
   const result = await input.runtime.requestApproval({
     actionType: input.actionType,
     actionKey: input.actionKey,
     risk: input.risk,
-    reason: scope.inScope
-      ? `Project policy requires approval for this write: ${input.relativePath}`
-      : scope.reason,
+    reason: `Project policy requires approval for this write: ${input.relativePath}`,
     payload: input.payload
   })
   if (result.decision !== 'approved') {
@@ -771,24 +980,7 @@ export function createAgentTools(input: {
         if (fs.existsSync(target.absolute)) {
           throw new Error(`Destination already exists: ${target.relative}`)
         }
-        const sourceScope = agentScopeDecision(agent, source.relative)
-        const targetScope = agentScopeDecision(agent, target.relative)
-        if (!sourceScope.inScope || !targetScope.inScope) {
-          const result = await runtime.requestApproval({
-            actionType: 'move_path',
-            actionKey: `move_path:${source.relative}->${target.relative}`,
-            risk: 'medium',
-            reason: !sourceScope.inScope ? sourceScope.reason : targetScope.reason,
-            payload: {
-              operation: 'move_path',
-              from: source.relative,
-              to: target.relative
-            }
-          })
-          if (result.decision !== 'approved') {
-            throw new Error('The Boss denied this file move.')
-          }
-        } else if (!permissions.autoWriteInsideRepo) {
+        if (!permissions.autoWriteInsideRepo) {
           const result = await runtime.requestApproval({
             actionType: 'move_path',
             actionKey: `move_path:${source.relative}->${target.relative}`,
@@ -860,6 +1052,214 @@ export function createAgentTools(input: {
     })
   } else if (buildMode && !writeEnabled) {
     warnings.push('Write tools are disabled by this agent\'s permissions.')
+  }
+
+  if (buildMode && typeof runtime.readTodos === 'function' && typeof runtime.writeTodos === 'function') {
+    tools.todo_write = tool({
+      description:
+        'Replace your personal task checklist for this Build meeting. Use it to keep a short flow of concrete steps. Only you see your list.',
+      inputSchema: z.object({
+        items: z
+          .array(
+            z.object({
+              content: z.string().min(1).max(300),
+              status: z.enum(['pending', 'in_progress', 'done', 'blocked']).optional()
+            })
+          )
+          .max(30)
+      }),
+      execute: async ({ items }) => ({
+        todos: runtime.writeTodos!(items)
+      })
+    })
+    tools.todo_read = tool({
+      description: 'Read your personal task checklist for this Build meeting.',
+      inputSchema: z.object({}),
+      execute: async () => ({ todos: runtime.readTodos!() })
+    })
+  }
+
+  if (buildMode) {
+    if (typeof runtime.postMessage === 'function') {
+      tools.post_message = tool({
+        description:
+          'Post a message to the shared team channel. Everyone sees it. Use it to coordinate, report progress, or notify another agent. Only the Coordinator replies to the Boss.',
+        inputSchema: z.object({
+          content: z.string().min(1).max(4000),
+          targetAgentId: z
+            .string()
+            .max(200)
+            .optional()
+            .describe('Optional agent id to address directly, e.g. backend.'),
+          kind: z.enum(['message', 'notify']).optional()
+        }),
+        execute: async ({ content, targetAgentId, kind }) => ({
+          message: runtime.postMessage!({
+            text: content,
+            targetAgentId: targetAgentId ?? null,
+            kind: kind ?? 'message'
+          })
+        })
+      })
+    }
+
+    if (typeof runtime.requestFromAgent === 'function') {
+      tools.request_from_agent = tool({
+        description:
+          'Ask another agent to build something you depend on. This creates a high-priority task for them, posts a request in the team channel, and puts your current task into waiting mode until they finish. Use it instead of stalling or writing their part yourself.',
+        inputSchema: z.object({
+          targetAgentId: z.string().min(1).max(200).describe('Agent id, e.g. backend.'),
+          title: z.string().min(3).max(160),
+          description: z.string().min(3).max(4000),
+          acceptanceCriteria: z.string().max(1000).optional(),
+          fileGlobs: z.array(z.string().max(512)).max(30).optional(),
+          priority: z.number().int().min(1).max(3).optional()
+        }),
+        execute: async (input) => {
+          const request = runtime.requestFromAgent!(input)
+          if (!request) {
+            throw new Error('The request could not be created.')
+          }
+          return {
+            ...request,
+            waiting: true,
+            note: 'Your current task is now waiting. End this turn and resume after the request is completed.'
+          }
+        }
+      })
+    }
+  }
+
+  if (searchEnabled) {
+    tools.glob = tool({
+      description:
+        'Find files by glob pattern, for example **/*.ts or src/**/*.tsx. Returns project-relative paths.',
+      inputSchema: z.object({
+        pattern: z.string().min(1).max(512),
+        limit: z.number().int().min(1).max(1000).optional()
+      }),
+      execute: async ({ pattern, limit }) =>
+        globProject(root, { pattern, limit })
+    })
+    tools.grep = tool({
+      description:
+        'Search project files with a regular expression. Optional include glob filters files. Returns path, line, column, and context.',
+      inputSchema: z.object({
+        pattern: z.string().min(1).max(500),
+        include: z.string().max(512).optional(),
+        caseSensitive: z.boolean().optional(),
+        maxResults: z.number().int().min(1).max(120).optional(),
+        contextLines: z.number().int().min(0).max(3).optional()
+      }),
+      execute: async (input) => grepProject(root, input)
+    })
+  }
+
+  if (buildMode && writeEnabled) {
+    tools.edit_file = tool({
+      description:
+        'Replace exactly one exact block in a project text file. Use this for focused edits; apply_patch is also available for multi-hunk patches.',
+      inputSchema: z.object({
+        path: z.string().min(1).max(2048),
+        oldText: z.string().min(1).max(200_000),
+        newText: z.string().max(200_000)
+      }),
+      execute: async ({ path: relativePath, oldText, newText }, options) => {
+        const { relative, absolute } = resolveWritableProjectPath(root, relativePath)
+        runtime.assertWriteAllowed?.(relative)
+        if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+          throw new Error(`File not found: ${relative}`)
+        }
+        const before = fs.readFileSync(absolute, 'utf8')
+        const occurrences = before.split(oldText).length - 1
+        if (occurrences === 0) {
+          throw new Error('oldText was not found. Read the file again and retry.')
+        }
+        if (occurrences > 1) {
+          throw new Error('oldText matched more than once. Include more context.')
+        }
+        const after = before.replace(oldText, newText)
+        await approveFileAction({
+          agent,
+          relativePath: relative,
+          actionType: 'patch_file',
+          actionKey: `edit_file:${relative}`,
+          risk: 'medium',
+          reason: `Edit ${relative}`,
+          payload: {
+            operation: 'edit_file',
+            path: relative,
+            oldText: previewText(oldText),
+            newText: previewText(newText)
+          },
+          runtime,
+          permissions
+        })
+        const snapshot = snapshotFile(runtime.sessionId, relative, 'before edit_file')
+        writeFileAtomic(absolute, after)
+        const change = recordChange({
+          sessionId: runtime.sessionId,
+          meetingId: runtime.meetingId,
+          taskId: runtime.taskId,
+          turnId: runtime.turnId,
+          agentId: agent.id,
+          type: 'patch',
+          path: relative,
+          beforeHash: snapshot.objectHash,
+          afterHash: hashBuffer(Buffer.from(after, 'utf8')),
+          snapshotId: snapshot.id,
+          metadata: { toolCallId: options.toolCallId }
+        })
+        return { path: relative, changed: true, changeId: change.id }
+      }
+    })
+
+    tools.apply_patch = tool({
+      description:
+        'Apply a unified multi-hunk patch to one file. Format: @@ context @@ then lines prefixed with space, - or +. Use for larger structured edits.',
+      inputSchema: z.object({
+        path: z.string().min(1).max(2048),
+        patch: z.string().min(1).max(400_000)
+      }),
+      execute: async ({ path: relativePath, patch }, options) => {
+        const { relative, absolute } = resolveWritableProjectPath(root, relativePath)
+        runtime.assertWriteAllowed?.(relative)
+        const before = fs.existsSync(absolute) ? fs.readFileSync(absolute, 'utf8') : ''
+        const after = applyPatchToText(before, patch)
+        await approveFileAction({
+          agent,
+          relativePath: relative,
+          actionType: 'patch_file',
+          actionKey: `apply_patch:${relative}`,
+          risk: 'medium',
+          reason: `Apply patch to ${relative}`,
+          payload: {
+            operation: 'apply_patch',
+            path: relative,
+            patch: previewText(patch, 2000)
+          },
+          runtime,
+          permissions
+        })
+        const snapshot = snapshotFile(runtime.sessionId, relative, 'before apply_patch')
+        ensureWriteDir(absolute)
+        writeFileAtomic(absolute, after)
+        const change = recordChange({
+          sessionId: runtime.sessionId,
+          meetingId: runtime.meetingId,
+          taskId: runtime.taskId,
+          turnId: runtime.turnId,
+          agentId: agent.id,
+          type: 'patch',
+          path: relative,
+          beforeHash: snapshot.objectHash,
+          afterHash: hashBuffer(Buffer.from(after, 'utf8')),
+          snapshotId: snapshot.id,
+          metadata: { toolCallId: options.toolCallId }
+        })
+        return { path: relative, changed: true, changeId: change.id }
+      }
+    })
   }
 
   if (buildMode && commandEnabled) {

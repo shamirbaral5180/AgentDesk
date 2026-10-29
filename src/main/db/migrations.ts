@@ -410,5 +410,28 @@ CREATE INDEX IF NOT EXISTS idx_run_leases_status ON run_leases(status, heartbeat
 CREATE INDEX IF NOT EXISTS idx_run_leases_meeting ON run_leases(meeting_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_run_leases_session ON run_leases(session_id, started_at);
 `
+  },
+  {
+    version: 9,
+    sql: `
+ALTER TABLE tasks ADD COLUMN waiting_on_json TEXT;
+ALTER TABLE tasks ADD COLUMN requested_by_agent_id TEXT;
+ALTER TABLE tasks ADD COLUMN request_kind TEXT;
+ALTER TABLE tasks ADD COLUMN parent_task_id TEXT;
+
+CREATE TABLE IF NOT EXISTS agent_todos (
+  id TEXT PRIMARY KEY,
+  meeting_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  task_id TEXT,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_todos_agent ON agent_todos(meeting_id, agent_id, position);
+CREATE INDEX IF NOT EXISTS idx_tasks_requested_by ON tasks(meeting_id, requested_by_agent_id);
+`
   }
 ]

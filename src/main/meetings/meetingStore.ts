@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type {
   AgentConfig,
+  AgentTodo,
+  AgentTodoStatus,
   ChatUsage,
   MeetingBudget,
   MeetingDecision,
@@ -94,10 +96,26 @@ type TaskRow = {
   acceptance_criteria: string | null
   file_globs_json: string | null
   depends_on_json: string | null
+  waiting_on_json: string | null
+  requested_by_agent_id: string | null
+  request_kind: string | null
+  parent_task_id: string | null
   review_cycles: number
   created_at: number
   updated_at: number
   completed_at: number | null
+}
+
+type AgentTodoRow = {
+  id: string
+  meeting_id: string
+  agent_id: string
+  task_id: string | null
+  content: string
+  status: string
+  position: number
+  created_at: number
+  updated_at: number
 }
 
 type TaskEventRow = {
@@ -176,7 +194,8 @@ function teamBudget(team: TeamConfig): MeetingBudget {
     maxTokens: team.orchestration.maxTokens,
     maxCostUsd: team.orchestration.maxCostUsd,
     maxToolStepsPerTurn: team.orchestration.maxToolStepsPerTurn,
-    maxReviewCycles: team.orchestration.maxReviewCycles
+    maxReviewCycles: team.orchestration.maxReviewCycles,
+    maxConcurrentAgents: team.orchestration.maxConcurrentAgents ?? 4
   }
 }
 
@@ -255,10 +274,28 @@ function toTask(row: TaskRow): MeetingTask {
     acceptanceCriteria: row.acceptance_criteria,
     fileGlobs: parseJson<string[]>(row.file_globs_json, []),
     dependsOn: parseJson<string[]>(row.depends_on_json, []),
+    waitingOnTaskIds: parseJson<string[]>(row.waiting_on_json, []),
+    requestedByAgentId: row.requested_by_agent_id,
+    requestKind: (row.request_kind as MeetingTask['requestKind']) ?? null,
+    parentTaskId: row.parent_task_id,
     reviewCycles: row.review_cycles,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at
+  }
+}
+
+function toTodo(row: AgentTodoRow): AgentTodo {
+  return {
+    id: row.id,
+    meetingId: row.meeting_id,
+    agentId: row.agent_id,
+    taskId: row.task_id,
+    content: row.content,
+    status: row.status as AgentTodoStatus,
+    position: row.position,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   }
 }
 
@@ -305,6 +342,17 @@ function toClaim(row: ClaimRow): MeetingFileClaim {
 }
 
 function toSummary(row: MeetingRow): MeetingSummary {
+  const budget = parseJson<MeetingBudget>(row.budget_json, {
+    maxRounds: 3,
+    maxTurns: 32,
+    maxMessages: 50,
+    maxMinutes: 15,
+    maxTokens: 300_000,
+    maxCostUsd: 2,
+    maxToolStepsPerTurn: 8,
+    maxReviewCycles: 2,
+    maxConcurrentAgents: 4
+  })
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -319,16 +367,7 @@ function toSummary(row: MeetingRow): MeetingSummary {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     endedAt: row.ended_at,
-    budget: parseJson<MeetingBudget>(row.budget_json, {
-      maxRounds: 3,
-      maxTurns: 32,
-      maxMessages: 50,
-      maxMinutes: 15,
-      maxTokens: 300_000,
-      maxCostUsd: 2,
-      maxToolStepsPerTurn: 8,
-      maxReviewCycles: 2
-    }),
+    budget: { ...budget, maxConcurrentAgents: budget.maxConcurrentAgents ?? 4 },
     usage: parseJson<MeetingUsage>(row.used_json, defaultUsage()),
     participants: participants(row.id),
     messageCount: row.message_count,
@@ -387,6 +426,7 @@ export function getMeetingDetail(meetingId: string): MeetingDetail {
       .prepare('SELECT * FROM task_events WHERE meeting_id = ? ORDER BY created_at ASC')
       .all(meetingId) as TaskEventRow[]
   ).map(toTaskEvent)
+  const todos = listMeetingTodos(meetingId)
 
   return {
     meeting: toSummary(row),
@@ -395,9 +435,71 @@ export function getMeetingDetail(meetingId: string): MeetingDetail {
     decisions,
     fileClaims,
     activity,
+    todos,
     plan: parseJson<MeetingPlan | null>(row.plan_json, null),
     finalReport: parseJson<MeetingFinalReport | null>(row.final_report_json, null)
   }
+}
+
+export function listMeetingTodos(meetingId: string): AgentTodo[] {
+  return (
+    database()
+      .prepare(
+        'SELECT * FROM agent_todos WHERE meeting_id = ? ORDER BY agent_id ASC, position ASC'
+      )
+      .all(meetingId) as AgentTodoRow[]
+  ).map(toTodo)
+}
+
+export function listAgentTodos(meetingId: string, agentId: string): AgentTodo[] {
+  return (
+    database()
+      .prepare(
+        'SELECT * FROM agent_todos WHERE meeting_id = ? AND agent_id = ? ORDER BY position ASC'
+      )
+      .all(meetingId, agentId) as AgentTodoRow[]
+  ).map(toTodo)
+}
+
+export function replaceAgentTodos(input: {
+  meetingId: string
+  agentId: string
+  taskId?: string | null
+  items: Array<{ content: string; status?: AgentTodoStatus }>
+}): AgentTodo[] {
+  const now = Date.now()
+  database().exec('BEGIN IMMEDIATE')
+  try {
+    database()
+      .prepare('DELETE FROM agent_todos WHERE meeting_id = ? AND agent_id = ?')
+      .run(input.meetingId, input.agentId)
+    const insert = database().prepare(
+      `INSERT INTO agent_todos
+        (id, meeting_id, agent_id, task_id, content, status, position, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    input.items.forEach((item, index) => {
+      insert.run(
+        randomUUID(),
+        input.meetingId,
+        input.agentId,
+        input.taskId ?? null,
+        item.content,
+        item.status ?? 'pending',
+        index,
+        now,
+        now
+      )
+    })
+    database()
+      .prepare('UPDATE meetings SET updated_at = ? WHERE id = ?')
+      .run(now, input.meetingId)
+    database().exec('COMMIT')
+  } catch (error) {
+    database().exec('ROLLBACK')
+    throw error
+  }
+  return listAgentTodos(input.meetingId, input.agentId)
 }
 
 export function createMeetingRecord(input: {
@@ -683,6 +785,55 @@ export function createBuildMeetingRecord(input: {
   }
 
   return getMeetingDetail(meetingId)
+}
+
+export function renameMeetingRecord(meetingId: string, title: string): MeetingSummary {
+  const trimmed = title.trim()
+  if (!trimmed) {
+    throw new AppError('MEETING_TITLE_REQUIRED', 'A session title is required.')
+  }
+  const row = meetingRow(meetingId)
+  const now = Date.now()
+  database()
+    .prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?')
+    .run(trimmed.slice(0, 160), now, row.session_id)
+  database()
+    .prepare('UPDATE meetings SET updated_at = ? WHERE id = ?')
+    .run(now, meetingId)
+  return meetingSummary(meetingId)
+}
+
+export function deleteMeetingRecord(meetingId: string): void {
+  const row = meetingRow(meetingId)
+  database().exec('BEGIN IMMEDIATE')
+  try {
+    for (const table of [
+      'agent_todos',
+      'task_events',
+      'tasks',
+      'decisions',
+      'file_claims',
+      'meeting_participants',
+      'meeting_summaries',
+      'meeting_work',
+      'tool_calls',
+      'usage_records',
+      'turns',
+      'change_events',
+      'approvals',
+      'mcp_calls',
+      'run_leases'
+    ]) {
+      database().prepare(`DELETE FROM ${table} WHERE meeting_id = ?`).run(meetingId)
+    }
+    database().prepare('DELETE FROM messages WHERE meeting_id = ?').run(meetingId)
+    database().prepare('DELETE FROM meetings WHERE id = ?').run(meetingId)
+    database().prepare('DELETE FROM sessions WHERE id = ?').run(row.session_id)
+    database().exec('COMMIT')
+  } catch (error) {
+    database().exec('ROLLBACK')
+    throw error
+  }
 }
 
 export function meetingSessionId(meetingId: string): string {
@@ -1243,6 +1394,187 @@ export function recordTaskEvent(input: {
   })
 }
 
+export function createRequestTask(input: {
+  meetingId: string
+  requestedByAgentId: string
+  targetAgentId: string
+  title: string
+  description: string
+  acceptanceCriteria?: string | null
+  fileGlobs?: string[]
+  parentTaskId?: string | null
+  priority?: number
+}): MeetingTask {
+  const meeting = meetingRow(input.meetingId)
+  const participants = participantRows(input.meetingId)
+  if (!participants.some((participant) => participant.agent_id === input.targetAgentId)) {
+    throw new AppError(
+      'REQUEST_TARGET_INVALID',
+      'The requested agent is not a participant in this Build meeting.'
+    )
+  }
+  const id = randomUUID()
+  const now = Date.now()
+  database()
+    .prepare(
+      `INSERT INTO tasks
+        (id, session_id, meeting_id, title, description, status, priority,
+         assignee_agent_id, created_by, acceptance_criteria, file_globs_json,
+         depends_on_json, waiting_on_json, requested_by_agent_id, request_kind,
+         parent_task_id, review_cycles, created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, '[]', '[]', ?, 'request', ?, 0, ?, ?, NULL)`
+    )
+    .run(
+      id,
+      meeting.session_id,
+      input.meetingId,
+      input.title,
+      input.description,
+      Math.min(Math.max(input.priority ?? 1, 1), 3),
+      input.targetAgentId,
+      input.requestedByAgentId,
+      input.acceptanceCriteria ?? null,
+      JSON.stringify(input.fileGlobs ?? []),
+      input.requestedByAgentId,
+      input.parentTaskId ?? null,
+      now,
+      now
+    )
+  recordTaskEvent({
+    taskId: id,
+    meetingId: input.meetingId,
+    agentId: input.targetAgentId,
+    type: 'requested',
+    toStatus: 'queued',
+    note: `Requested by ${input.requestedByAgentId}.`
+  })
+  return meetingTask(id)
+}
+
+export function setTaskWaiting(input: {
+  taskId: string
+  waitingOnTaskIds: string[]
+  note?: string
+}): MeetingTask {
+  const current = meetingTask(input.taskId)
+  const ids = [...new Set(input.waitingOnTaskIds.filter(Boolean))]
+  database()
+    .prepare(
+      `UPDATE tasks SET status = 'waiting', waiting_on_json = ?, updated_at = ? WHERE id = ?`
+    )
+    .run(JSON.stringify(ids), Date.now(), input.taskId)
+  recordTaskEvent({
+    taskId: input.taskId,
+    meetingId: current.meetingId,
+    agentId: current.assigneeAgentId,
+    type: 'waiting',
+    fromStatus: current.status,
+    toStatus: 'waiting',
+    note: input.note ?? 'Waiting for another agent to finish the requested work.'
+  })
+  return meetingTask(input.taskId)
+}
+
+export function releaseTasksWaitingOn(meetingId: string, completedTaskId: string): MeetingTask[] {
+  const rows = database()
+    .prepare("SELECT * FROM tasks WHERE meeting_id = ? AND status = 'waiting'")
+    .all(meetingId) as TaskRow[]
+  const released: MeetingTask[] = []
+  for (const row of rows) {
+    const waiting = parseJson<string[]>(row.waiting_on_json, [])
+    if (!waiting.includes(completedTaskId)) {
+      continue
+    }
+    const remaining = waiting.filter((id) => id !== completedTaskId)
+    database()
+      .prepare(
+        `UPDATE tasks SET status = ?, waiting_on_json = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(
+        remaining.length > 0 ? 'waiting' : 'queued',
+        JSON.stringify(remaining),
+        Date.now(),
+        row.id
+      )
+    recordTaskEvent({
+      taskId: row.id,
+      meetingId,
+      agentId: row.assignee_agent_id,
+      type: remaining.length > 0 ? 'waiting' : 'ready',
+      fromStatus: 'waiting',
+      toStatus: remaining.length > 0 ? 'waiting' : 'queued',
+      note:
+        remaining.length > 0
+          ? 'Still waiting for other requested work.'
+          : 'The requested work is complete. The task is ready to resume.'
+    })
+    released.push(meetingTask(row.id))
+  }
+  return released
+}
+
+function globStaticPrefix(glob: string): string {
+  const normalized = normalizeRelativePath(glob).replace(/^\/+/, '')
+  const wildcard = normalized.search(/(\*|\?|\[)/)
+  const prefix = wildcard === -1 ? normalized : normalized.slice(0, wildcard)
+  return prefix.replace(/\/+$/, '')
+}
+
+function globsOverlap(a: string, b: string): boolean {
+  const left = normalizeRelativePath(a).replace(/^\/+/, '')
+  const right = normalizeRelativePath(b).replace(/^\/+/, '')
+  if (!left || !right || left === '**' || right === '**') {
+    return true
+  }
+  if (!/(\*|\?|\[)/.test(left) && !/(\*|\?|\[)/.test(right)) {
+    return left === right
+  }
+  if (matchesAnyGlob(left, [right]) || matchesAnyGlob(right, [left])) {
+    return true
+  }
+  const leftPrefix = globStaticPrefix(left)
+  const rightPrefix = globStaticPrefix(right)
+  if (!leftPrefix || !rightPrefix) {
+    return true
+  }
+  return (
+    leftPrefix === rightPrefix ||
+    leftPrefix.startsWith(`${rightPrefix}/`) ||
+    rightPrefix.startsWith(`${leftPrefix}/`)
+  )
+}
+
+export function findClaimConflict(input: {
+  meetingId: string
+  agentId: string
+  taskId?: string | null
+  globs: string[]
+}): { agentId: string; pathPrefix: string; taskId: string | null } | null {
+  const globs =
+    input.globs.length > 0 ? input.globs : []
+  if (globs.length === 0) {
+    return null
+  }
+  const rows = database()
+    .prepare(
+      `SELECT * FROM file_claims WHERE meeting_id = ? AND status = 'active' AND agent_id != ?`
+    )
+    .all(input.meetingId, input.agentId) as ClaimRow[]
+  for (const row of rows) {
+    if (input.taskId && row.task_id === input.taskId) {
+      continue
+    }
+    if (globs.some((glob) => globsOverlap(glob, row.path_prefix))) {
+      return {
+        agentId: row.agent_id,
+        pathPrefix: row.path_prefix,
+        taskId: row.task_id
+      }
+    }
+  }
+  return null
+}
+
 export function transitionMeetingTask(input: {
   taskId: string
   status: MeetingTaskStatus
@@ -1369,18 +1701,21 @@ export function assertTaskWriteAllowed(input: {
        WHERE meeting_id = ? AND agent_id = ? AND status = 'active'`
     )
     .all(input.meetingId, input.agentId) as ClaimRow[]
-  if (rows.length === 0) {
-    throw new AppError(
-      'FILE_CLAIM_MISSING',
-      `No active file claim allows ${relative}. Wait for the task claim to be assigned.`
-    )
+  if (matchesAnyGlob(relative, rows.map((row) => row.path_prefix))) {
+    return
   }
-  if (!matchesAnyGlob(relative, rows.map((row) => row.path_prefix))) {
+  const otherClaims = database()
+    .prepare(
+      `SELECT * FROM file_claims
+       WHERE meeting_id = ? AND status = 'active' AND agent_id != ?
+       ORDER BY claimed_at ASC`
+    )
+    .all(input.meetingId, input.agentId) as ClaimRow[]
+  const conflict = otherClaims.find((row) => matchesAnyGlob(relative, [row.path_prefix]))
+  if (conflict) {
     throw new AppError(
       'FILE_CLAIM_DENIED',
-      `${relative} is outside the active task claim. Claimed paths: ${rows
-        .map((row) => row.path_prefix)
-        .join(', ')}.`
+      `${relative} is currently claimed by another agent (${conflict.agent_id}: ${conflict.path_prefix}). Wait for that task to finish or ask the Coordinator.`
     )
   }
 }

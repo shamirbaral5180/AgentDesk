@@ -577,7 +577,8 @@ async function runTurn(input: {
         maxTokens: 300_000,
         maxCostUsd: 2,
         maxToolStepsPerTurn: 8,
-        maxReviewCycles: 2
+        maxReviewCycles: 2,
+        maxConcurrentAgents: 4
       },
 
       permissions: {

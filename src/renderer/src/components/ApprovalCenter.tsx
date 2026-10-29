@@ -73,6 +73,18 @@ function ApprovalPayload({ approval }: { approval: ApprovalRequest }) {
   }
 
   if (approval.actionType === 'patch_file') {
+    if (payloadValue(payload, 'operation') === 'apply_patch') {
+      return (
+        <div className="approval-payload">
+          <div className="approval-payload-row">
+            <span>Path</span>
+            <code>{payloadValue(payload, 'path') ?? '?'}</code>
+          </div>
+          <span>Patch</span>
+          <pre>{payloadValue(payload, 'patch') ?? ''}</pre>
+        </div>
+      )
+    }
     return (
       <div className="approval-payload">
         <div className="approval-payload-row">
@@ -158,13 +170,12 @@ export function ApprovalCenter() {
     }
   }, [])
 
-  if (approvals.length === 0) {
-    return null
-  }
-
   const approval = approvals[0]
 
   async function decide(decision: ApprovalDecisionInput['decision']): Promise<void> {
+    if (!approval) {
+      return
+    }
     setBusy(true)
     setError('')
     try {
@@ -190,37 +201,59 @@ export function ApprovalCenter() {
     }
   }
 
+  useEffect(() => {
+    if (!approval) {
+      return
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === '1') {
+        void decide('once')
+      } else if (event.key === '2') {
+        void decide('project')
+      } else if (event.key === '3' || event.key === 'Escape') {
+        void decide('deny')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [approval, busy])
+
+  if (!approval) {
+    return null
+  }
+
   return (
     <div className="modal-backdrop approval-backdrop" role="presentation">
       <div
-        className="modal approval-modal"
+        className="modal permission-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="approval-title"
       >
-        <header className="modal-header">
-          <div className="modal-title-group">
-            <span className={`approval-risk-icon ${approval.risk}`}>
-              <Icon name="shield" size={19} />
-            </span>
-            <div>
-              <h2 id="approval-title">Boss approval required</h2>
-              <p>
-                {actionTitle(approval.actionType)}  -  {formatRelativeTime(approval.createdAt)}
-                {approvals.length > 1 ? `  -  1 of ${approvals.length} pending` : ''}
-              </p>
-            </div>
+        <header className="permission-header">
+          <div className={`permission-icon ${approval.risk}`}>
+            <Icon name="shield" size={18} />
+          </div>
+          <div className="permission-title">
+            <h2 id="approval-title">Permission required</h2>
+            <p>
+              {approval.agentId} wants to {actionTitle(approval.actionType).toLowerCase()}
+            </p>
           </div>
           <span className={`approval-risk ${approval.risk}`}>{approval.risk} risk</span>
         </header>
 
-        <div className="modal-body approval-body">
+        <div className="permission-body">
           <p className="approval-reason">{approval.reason}</p>
           <ApprovalPayload approval={approval} />
           {approval.actionType === 'run_command' && (
             <p className="approval-note">
-              The command will run with your Windows user permissions. Approval does not
-              sandbox it.
+              Runs with your Windows user permissions. Approval does not sandbox it.
+            </p>
+          )}
+          {approvals.length > 1 && (
+            <p className="approval-note">
+              1 of {approvals.length} pending. Remaining requests appear after this one.
             </p>
           )}
           {error && (
@@ -231,42 +264,39 @@ export function ApprovalCenter() {
           )}
         </div>
 
-        <footer className="modal-footer approval-footer">
+        <footer className="permission-footer">
           <button
-            className="btn btn-ghost btn-small"
+            className="permission-choice reject"
             type="button"
             onClick={() => void decide('deny')}
             disabled={busy}
           >
-            Deny
+            <span>Reject</span>
+            <kbd>3</kbd>
           </button>
-          <div className="approval-actions">
-            <button
-              className="btn btn-quiet btn-small"
-              type="button"
-              onClick={() => void decide('once')}
-              disabled={busy}
-            >
-              Allow once
-            </button>
-            <button
-              className="btn btn-quiet btn-small"
-              type="button"
-              onClick={() => void decide('session')}
-              disabled={busy}
-            >
-              Allow this session
-            </button>
-            <button
-              className="btn btn-primary btn-small"
-              type="button"
-              onClick={() => void decide('project')}
-              disabled={busy}
-            >
-              Allow for project
-            </button>
-          </div>
+          <button
+            className="permission-choice"
+            type="button"
+            onClick={() => void decide('once')}
+            disabled={busy}
+          >
+            <span>Allow once</span>
+            <kbd>1</kbd>
+          </button>
+          <button
+            className="permission-choice primary"
+            type="button"
+            onClick={() => void decide('project')}
+            disabled={busy}
+          >
+            <span>Always allow</span>
+            <kbd>2</kbd>
+          </button>
         </footer>
+        <div className="permission-hint">
+          {formatRelativeTime(approval.createdAt)} - project scope keeps this action allowed
+          until you change it.
+        </div>
       </div>
     </div>
   )

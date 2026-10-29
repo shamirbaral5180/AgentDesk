@@ -29,53 +29,62 @@ API keys are encrypted with Windows DPAPI through Electron `safeStorage`. Keys n
 
 The default team has six editable agents: Coordinator, Frontend, Backend, Database, QA, and DevOps. You can rename agents, edit instructions, change colors, enable or disable them, add custom agents, and set write scopes.
 
-Each agent can be assigned a different model and temperature. Plan mode only offers read-only tools. Build mode offers write, patch, move, delete, and command tools subject to role scope and approvals.
+Each agent can be assigned a different model and temperature. Build needs a tool-capable model for the agent that owns a task; if the assigned model cannot call tools, the Build start is rejected with the agent names to fix. Plan mode only offers read-only tools.
 
 ## 4. Project desk
 
 The Project desk is the single workspace for planning and building. It has three panes:
 
-- Left: project files and the team roster with live statuses.
+- Left: sessions, project files, and the team roster with live statuses.
 - Middle: the Boss-to-Coordinator chat. Only the Coordinator answers you.
-- Right: agent-to-agent discussion, tasks, and active file claims.
+- Right: the agent team channel, agent flows (personal todo lists), the task board, and active file claims.
 
-The composer has only Plan and Build. Plan mode is read-only. Build mode can create, edit, and test files inside the opened project folder. `.agentdesk` only stores memory, tasks, snapshots, and state; the app being built lives in the project folder itself.
+Sessions are listed in the left sidebar. Load an old session by clicking it, rename it with the edit button, delete it with the trash button, or press `New` for a fresh session. A Plan or Build session is saved automatically when it starts.
 
-## 5. Plan room
+The composer has only Plan and Build. Plan mode is read-only and cannot change files. Build mode can read, create, edit, move, delete, and test files inside the opened project. `.agentdesk` only stores memory, tasks, snapshots, and state; the app being built lives in the project folder itself.
 
-1. Choose Plan room.
+## 5. Plan workflow
+
+1. Choose Plan.
 2. Describe the goal.
-3. Select the participants.
-4. Start the meeting.
+3. Start the meeting.
 
-The Plan room runs intake, discussion, and planning phases. Every turn is stored. The Coordinator returns a structured plan with tasks, decisions, risks, acceptance criteria, and file claims. If the structured plan cannot be parsed, a deterministic fallback plan is used.
+The team runs intake, discussion, and planning phases. The Coordinator returns a structured plan with tasks, decisions, risks, acceptance criteria, and file claims. You approve the plan, then switch to Build.
 
-You can stop or pause a meeting, send a direct message to a participant, inspect the timeline, and approve the finished plan.
+## 6. Build workflow and parallel work
 
-## 5. Build room
+Build starts from an approved plan. The scheduler runs up to four agents in parallel by default. Independent tasks start immediately; a task with unfinished dependencies is marked `Waiting` until those tasks finish. A failed dependency marks dependent tasks blocked with the reason.
 
-Build rooms start from a completed, approved Plan meeting. Tasks run one at a time with one active writer. Each task gets enforced file claims. QA reviews the result; a `changes_requested` review enters a fix cycle, then re-review.
+Agents coordinate in the shared team channel:
+
+- `post_message` reports progress to the whole team.
+- `request_from_agent` asks another agent to build a missing piece. This creates a high-priority request task, posts it in the channel, and puts the requesting task into `Waiting`. When the request is complete, the waiting task resumes automatically.
+- Completing a task notifies the whole team and releases anything waiting on it.
+- Each agent keeps its own todo list with `todo_write` and `todo_read`, shown as Agent flows on the right.
+
+Every file change is claim-checked, snapshotted, and recorded. If an agent answers with source code but does not write files, AgentDesk asks it to call its write tools; if it still does not write, the task is stopped with a clear reason instead of pretending the files exist.
 
 Controls:
 
-- Pause keeps partial work and allows resume.
-- Stop ends the meeting and records a partial report.
+- Stop ends the run and records a partial report.
 - Queue interrupt adds Boss guidance for the next turn.
 - Immediate interrupt pauses the current turn and cancels open approvals.
 - Task-level revert restores the files changed by that task.
 - Changes opens the full snapshot-backed change log.
 
-The final report lists files, commands, tests, approvals, unresolved items, and revert instructions.
+The final report lists files, commands, tests, requests, approvals, unresolved items, and revert instructions.
 
-## 6. Approvals and changes
+## 7. Tools and approvals
 
-Approvals are required for writes outside role scope, outside-project paths, installs, downloads, deploys, git pushes, inline code execution, destructive commands, and destructive MCP tools.
+Build agents have full access inside the project: `list_files`, `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `apply_patch`, `patch_file`, `delete_path`, `move_path`, `run_command`, background process tools, `recall_memory`, personal todos, team messages and requests, and MCP tools. Plan mode offers read-only tools.
 
-A destructive MCP tool always asks the Boss, even when its project policy is `allow`. Approval grants apply only within their scope and project; they cannot bypass hard blocks.
+Writes are approved automatically inside the repository. Approval is required, with details, for commands or paths outside the project and for installs, downloads, container images and containers, deploys, git pushes, inline code execution, destructive commands, and destructive MCP tools.
+
+The Boss approval prompt is a permission card with the agent, action, reason, and full command or patch details, plus `Allow once`, `Always allow`, and `Reject` (keys `1`, `2`, `3`). Approval grants apply only within their scope and project; they cannot bypass hard blocks.
 
 Every file write is snapshotted before it happens. File changes and commands are recorded in the project change log and can be reverted.
 
-## 7. Memory
+## 8. Memory
 
 AgentDesk stores:
 
@@ -87,7 +96,7 @@ AgentDesk stores:
 
 Memory is recalled into prompts and can be searched by the `recall_memory` tool. Pinned memory is never removed by retention pruning. Settings, Memory shows the bundle and lets you pin or delete entries.
 
-## 8. MCP
+## 9. MCP
 
 The MCP catalog is global and lives in the app folder. Project configuration only stores enabled server IDs and per-tool policies. Secrets for MCP environment variables and headers live in the DPAPI store.
 
@@ -103,7 +112,7 @@ Tools are namespaced as `mcp__<server>__<tool>`. Plan mode only exposes read-onl
 
 Use Settings, MCP to add, test, discover, restart, view logs, enable for the project, set policies, and inspect audit rows.
 
-## 9. Recovery and backups
+## 10. Recovery and backups
 
 AgentDesk records a run lease and checkpoint while Plan, Build, and direct meeting turns run. If the app stops unexpectedly:
 
@@ -118,7 +127,7 @@ Startup also reconciles managed background processes and stale MCP child process
 
 Settings and secrets use fsync-backed atomic writes with rotated backups. A bad settings field is recovered section by section. A bad encrypted secret is dropped alone; unrelated keys survive.
 
-## 10. Retention, export, reset
+## 11. Retention, export, reset
 
 Settings, Data shows database size, table counts, integrity status, backups, and last backup time.
 
@@ -149,21 +158,21 @@ Reset scopes:
 
 Type `RESET` to confirm. The selected scope only is removed.
 
-## 11. Cost controls
+## 12. Cost controls
 
 Settings, Data shows usage by provider and the current month cost. The default monthly cap is 50 USD with a warning at 80 percent and a hard stop at 100 percent. The hard stop blocks new chat runs and meetings until you raise the cap.
 
 Per-meeting limits still apply independently: rounds, turns, messages, minutes, tokens, cost, tool steps, and review cycles.
 
-## 12. Update notifications
+## 13. Update notifications
 
 AgentDesk checks the GitHub latest release at startup. Only the portable zip is offered for download. A dismissed version is remembered; Settings, About has a manual Check now button and release notes link.
 
-## 13. Diagnostics
+## 14. Diagnostics
 
 Settings, Data can generate redacted diagnostics, copy them, or export a text file. Diagnostics include versions, paths, database health, counts, and recovery state. Secret values are never included.
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 - Project already open: another AgentDesk instance holds the project lock. Close it or remove a stale `.agentdesk/app.lock` only after confirming no instance is running.
 - Provider failure: check the key, endpoint, and model test in Settings.
@@ -172,7 +181,7 @@ Settings, Data can generate redacted diagnostics, copy them, or export a text fi
 - Corrupt database: AgentDesk tries the newest backup on open. If that fails, restore from Settings, Data or copy the project to a safe place before manual repair.
 - Portable zip will not start: move the folder to a writable location. The app must be able to create `data` beside the executable.
 
-## 15. Data locations
+## 16. Data locations
 
 - Portable app data: `<app folder>/data`
 - Project workspace: `<repo>/.agentdesk`

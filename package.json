@@ -1,6 +1,6 @@
 {
   "name": "agentdesk",
-  "version": "0.10.0",
+  "version": "0.20.0",
   "description": "Portable multi-agent software studio",
   "main": "./out/main/index.js",
   "author": "AgentDesk",
@@ -20,6 +20,7 @@
     "smoke:phase7": "electron-vite build && electron . --phase7-smoke",
     "smoke:phase8": "electron-vite build && electron . --phase8-smoke",
     "smoke:phase9": "electron-vite build && electron . --phase9-smoke",
+    "smoke:phase10": "electron-vite build && electron . --phase10-smoke",
     "screenshot": "electron-vite build && electron . --screenshot=workspace",
     "screenshot:landing": "electron-vite build && electron . --screenshot=landing",
     "screenshot:providers": "electron-vite build && electron . --screenshot=providers",

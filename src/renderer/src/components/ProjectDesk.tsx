@@ -114,6 +114,9 @@ function agentStatus(
   if (tasks.some((task) => task.status === 'changes_requested')) {
     return { label: 'Fixing', tone: 'busy' }
   }
+  if (tasks.some((task) => task.status === 'waiting')) {
+    return { label: 'Waiting', tone: 'idle' }
+  }
   if (tasks.some((task) => task.status === 'blocked')) {
     return { label: 'Blocked', tone: 'error' }
   }
@@ -186,6 +189,8 @@ function taskStatusLabel(status: MeetingTask['status']): string {
       return 'Changes'
     case 'done':
       return 'Done'
+    case 'waiting':
+      return 'Waiting'
     case 'blocked':
       return 'Blocked'
     default:
@@ -213,6 +218,9 @@ export function ProjectDesk({
   const [approving, setApproving] = useState(false)
   const [inlineError, setInlineError] = useState('')
   const [treeRevision, setTreeRevision] = useState(0)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const [sessionBusy, setSessionBusy] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -350,6 +358,22 @@ export function ProjectDesk({
         )
         return
       }
+      if (event.type === 'todo') {
+        setDetail((current) => {
+          if (!current || current.meeting.id !== event.meetingId) {
+            return current
+          }
+          return {
+            ...current,
+            meeting: event.meeting,
+            todos: [
+              ...current.todos.filter((todo) => todo.agentId !== event.agentId),
+              ...event.todos
+            ]
+          }
+        })
+        return
+      }
       if (event.type === 'report') {
         setDetail((current) =>
           !current || current.meeting.id !== event.meetingId
@@ -374,7 +398,8 @@ export function ProjectDesk({
       (message.senderType === 'agent' &&
         message.senderAgentId === coordinatorId &&
         message.metadata?.phase !== 'intake' &&
-        message.metadata?.phase !== 'discussion')
+        message.metadata?.phase !== 'discussion' &&
+        !['message', 'request', 'notify'].includes(message.kind))
   )
   const teamMessages = (detail?.messages ?? []).filter(
     (message) =>
@@ -382,7 +407,8 @@ export function ProjectDesk({
       message.senderAgentId &&
       (message.senderAgentId !== coordinatorId ||
         message.metadata?.phase === 'intake' ||
-        message.metadata?.phase === 'discussion')
+        message.metadata?.phase === 'discussion' ||
+        ['message', 'request', 'notify'].includes(message.kind))
   )
   const activeTasks = detail?.tasks.filter((task) => task.status !== 'done') ?? []
   const latestApprovedPlan = meetings.find(
@@ -400,6 +426,52 @@ export function ProjectDesk({
     }
     setDetail(loaded.data)
     setMode(loaded.data.meeting.mode)
+    setInlineError('')
+    setRunning(isRunning(loaded.data.meeting))
+    setTreeRevision((value) => value + 1)
+  }
+
+  async function renameSession(meetingId: string): Promise<void> {
+    const title = renameDraft.trim()
+    if (!title) {
+      setRenamingId(null)
+      return
+    }
+    setSessionBusy(meetingId)
+    try {
+      const result = await window.agentdesk.renameMeeting(meetingId, title)
+      if (!result.ok) {
+        setInlineError(result.error.message)
+        return
+      }
+      setMeetings((current) =>
+        current.map((entry) => (entry.id === meetingId ? result.data : entry))
+      )
+      setRenamingId(null)
+    } finally {
+      setSessionBusy(null)
+    }
+  }
+
+  async function deleteSession(meetingId: string): Promise<void> {
+    if (!window.confirm('Delete this session and its messages, tasks, and todos?')) {
+      return
+    }
+    setSessionBusy(meetingId)
+    try {
+      const result = await window.agentdesk.deleteMeeting(meetingId)
+      if (!result.ok) {
+        setInlineError(result.error.message)
+        return
+      }
+      setMeetings((current) => current.filter((entry) => entry.id !== meetingId))
+      if (detail?.meeting.id === meetingId) {
+        setDetail(null)
+        setMode('plan')
+      }
+    } finally {
+      setSessionBusy(null)
+    }
   }
 
   async function startPlan(goal: string): Promise<void> {
@@ -610,6 +682,80 @@ export function ProjectDesk({
         </div>
 
         <div className="desk-sidebar-scroll">
+          <section className="side-section">
+            <div className="side-label">
+              <span>Sessions</span>
+              <span className="side-label-meta">{meetings.length}</span>
+            </div>
+            <div className="desk-session-list">
+              {meetings.length === 0 && (
+                <p className="sidebar-hint">Start a Plan or Build to create a session.</p>
+              )}
+              {meetings.slice(0, 30).map((entry) => {
+                const active = detail?.meeting.id === entry.id
+                return (
+                  <div
+                    className={active ? 'desk-session-row active' : 'desk-session-row'}
+                    key={entry.id}
+                  >
+                    {renamingId === entry.id ? (
+                      <input
+                        className="desk-session-rename"
+                        value={renameDraft}
+                        autoFocus
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onBlur={() => void renameSession(entry.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            void renameSession(entry.id)
+                          }
+                          if (event.key === 'Escape') {
+                            setRenamingId(null)
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        className="desk-session-main"
+                        type="button"
+                        onClick={() => void loadMeeting(entry.id)}
+                        disabled={sessionBusy === entry.id}
+                      >
+                        <strong>{entry.title}</strong>
+                        <span>
+                          {entry.mode === 'build' ? 'Build' : 'Plan'} -{' '}
+                          {statusLabel(entry.status)}
+                        </span>
+                      </button>
+                    )}
+                    <div className="desk-session-actions">
+                      <button
+                        className="icon-button tiny"
+                        type="button"
+                        title="Rename session"
+                        onClick={() => {
+                          setRenamingId(entry.id)
+                          setRenameDraft(entry.title)
+                        }}
+                      >
+                        <Icon name="edit" size={12} />
+                      </button>
+                      <button
+                        className="icon-button tiny danger"
+                        type="button"
+                        title="Delete session"
+                        onClick={() => void deleteSession(entry.id)}
+                        disabled={sessionBusy === entry.id}
+                      >
+                        <Icon name="trash" size={12} />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+
           <section className="side-section">
             <div className="side-label">
               <span>Explorer</span>
@@ -889,7 +1035,16 @@ export function ProjectDesk({
                     (entry) => entry.id === message.senderAgentId
                   )
                   return (
-                    <article className="desk-team-message" key={message.id}>
+                    <article
+                      className={
+                        message.kind === 'request'
+                          ? 'desk-team-message request'
+                          : message.kind === 'notify'
+                            ? 'desk-team-message notify'
+                            : 'desk-team-message'
+                      }
+                      key={message.id}
+                    >
                       <div className="desk-message-head">
                         <span
                           className="desk-avatar"
@@ -910,6 +1065,31 @@ export function ProjectDesk({
                 })
               )}
 
+              {(detail?.todos ?? []).length > 0 && (
+                <div className="desk-task-section">
+                  <span className="desk-activity-label">Agent flows</span>
+                  {project.agents.map((agent) => {
+                    const todos = (detail?.todos ?? []).filter(
+                      (todo) => todo.agentId === agent.id
+                    )
+                    if (todos.length === 0) {
+                      return null
+                    }
+                    return (
+                      <div className="desk-todo-group" key={agent.id}>
+                        <strong>{agent.name}</strong>
+                        {todos.map((todo) => (
+                          <div className={`desk-todo-row ${todo.status}`} key={todo.id}>
+                            <span className="desk-todo-dot" />
+                            <span>{todo.content}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
               {activeTasks.length > 0 && (
                 <div className="desk-task-section">
                   <span className="desk-activity-label">Tasks & claims</span>
@@ -923,7 +1103,16 @@ export function ProjectDesk({
                           <strong>{task.title}</strong>
                           <span>
                             {agent?.name ?? 'Unassigned'} - {taskStatusLabel(task.status)}
+                            {task.requestedByAgentId
+                              ? ` - requested by ${task.requestedByAgentId}`
+                              : ''}
                           </span>
+                          {task.waitingOnTaskIds.length > 0 && (
+                            <span className="desk-task-blocker">
+                              Waiting for {task.waitingOnTaskIds.length} task
+                              {task.waitingOnTaskIds.length === 1 ? '' : 's'} to finish
+                            </span>
+                          )}
                           {task.fileGlobs.length > 0 && (
                             <code>{task.fileGlobs.join(', ')}</code>
                           )}

@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs'
+import fs from 'node:fs'
 import path from 'node:path'
 import {
   app,
@@ -44,6 +44,7 @@ import { runPhase6Smoke } from './phase6Smoke'
 import { runPhase7Smoke } from './phase7Smoke'
 import { runPhase8Smoke } from './phase8Smoke'
 import { runPhase9Smoke } from './phase9Smoke'
+import { runPhase10Smoke } from './phase10Smoke'
 import { checkForUpdates } from './updates/updateService'
 import { closeAllServers } from './mcp/mcpManager'
 import { createMockChatServer, type MockChatServer } from './chatMock'
@@ -62,6 +63,7 @@ const isPhase6Smoke = process.argv.includes('--phase6-smoke')
 const isPhase7Smoke = process.argv.includes('--phase7-smoke')
 const isPhase8Smoke = process.argv.includes('--phase8-smoke')
 const isPhase9Smoke = process.argv.includes('--phase9-smoke')
+const isPhase10Smoke = process.argv.includes('--phase10-smoke')
 const screenshotArgument = process.argv.find((argument) => argument.startsWith('--screenshot'))
 const isScreenshotMode = Boolean(screenshotArgument)
 const screenshotTarget =
@@ -349,6 +351,12 @@ if (!hasSingleInstanceLock) {
       return
     }
 
+    if (isPhase10Smoke) {
+      const exitCode = await runPhase10Smoke()
+      app.exit(exitCode)
+      return
+    }
+
     if (isScreenshotMode) {
       let showcaseRoot: string | null = null
       let showcaseProviderId: string | null = null
@@ -497,6 +505,7 @@ if (!hasSingleInstanceLock) {
             `screenshot-${screenshotTarget}.png`
           )
         } else if (screenshotTarget === 'approval') {
+          await new Promise<void>((resolve) => setTimeout(resolve, 700))
           topShot = await captureWindow(
             mainWindow,
             `screenshot-${screenshotTarget}.png`

@@ -116,8 +116,10 @@ import {
   cancelAllMeetings,
   createBuildMeeting,
   createMeeting,
+  deleteMeeting,
   getMeeting,
   listMeetings,
+  renameMeeting,
   markMeetingStopped,
   pauseMeeting,
   queueMeetingInterrupt,
@@ -364,6 +366,11 @@ const meetingCreateArgument = z.object({
 
 const meetingIdArgument = z.object({
   meetingId: z.string().min(1).max(200)
+})
+
+const meetingRenameArgument = z.object({
+  meetingId: z.string().min(1).max(200),
+  title: z.string().trim().min(1).max(160)
 })
 
 const meetingDirectArgument = z.object({
@@ -668,6 +675,17 @@ export function registerIpcHandlers(): void {
   register<MeetingDetail>(IPC_CHANNELS.meetingGet, (rawArgument) => {
     const argument = parseArgument(meetingIdArgument, rawArgument)
     return getMeeting(argument.meetingId)
+  })
+
+  register<MeetingSummary>(IPC_CHANNELS.meetingRename, (rawArgument) => {
+    const argument = parseArgument(meetingRenameArgument, rawArgument)
+    return renameMeeting(argument.meetingId, argument.title)
+  })
+
+  register<null>(IPC_CHANNELS.meetingDelete, (rawArgument) => {
+    const argument = parseArgument(meetingIdArgument, rawArgument)
+    deleteMeeting(argument.meetingId)
+    return null
   })
 
   register<MeetingDetail>(IPC_CHANNELS.meetingCreate, (rawArgument) => {

@@ -1,6 +1,7 @@
 ﻿import path from 'node:path'
 import type {
   AgentConfig,
+  AgentTodo,
   AppSettings,
   ChatContextFile,
   ChatMode,
@@ -472,12 +473,15 @@ function buildPhaseInstruction(
 ): string[] {
   if (phase === 'build') {
     return [
-      'You are executing one Build task. Work only inside the active file claims shown below.',
+      'You are executing one Build task. You may read, create, edit, and test anywhere inside the project.',
+      'Active claims are coordination locks. Do not write a path currently claimed by another agent.',
       'Read the relevant files first, make a focused change, and run the smallest useful verification.',
-      'Every write is snapshotted and recorded. Actions outside your role scope, destructive commands,',
-      'installs, downloads, deploys, git pushes, and inline execution may pause for Boss approval.',
-      'Do not touch files outside the active claim. If a needed file is not claimed, stop and report it.',
-      'Finish with a short report: summary, files changed, commands run, blockers, and next steps.'
+      'Every write is snapshotted and recorded. Container builds/runs, installs, downloads, deploys,',
+      'git pushes, commands outside the project, and inline execution pause for Boss approval.',
+      'If you need another agent to build something first, call request_from_agent; your task becomes waiting.',
+      'If a request is addressed to you, prioritize it, then notify the requester and the team.',
+      'Use post_message to report progress or ask the team. Only the Coordinator talks to the Boss.',
+      'Maintain your personal todo flow. Finish with a short report: summary, files changed, commands, blockers.'
     ]
   }
   if (phase === 'review') {
@@ -520,6 +524,9 @@ export function compileBuildPrompt(input: {
   plan: MeetingPlan | null
   claims: MeetingFileClaim[]
   historyText: string
+  teamChannelText: string
+  todos: AgentTodo[]
+  maxConcurrentAgents: number
   memory: MemoryPromptContext
   toolsAvailable: boolean
   toolNames: string[]
@@ -540,6 +547,9 @@ export function compileBuildPrompt(input: {
     plan,
     claims,
     historyText,
+    teamChannelText,
+    todos,
+    maxConcurrentAgents,
     memory,
     toolsAvailable,
     toolNames,
@@ -570,11 +580,23 @@ export function compileBuildPrompt(input: {
     )
     .join('\n')
   const taskLines = tasks
-    .map(
-      (entry) =>
-        `- [${entry.status}] ${entry.title} (owner: ${entry.assigneeAgentId ?? 'unassigned'}, priority ${entry.priority}, reviews ${entry.reviewCycles})`
-    )
+    .map((entry) => {
+      const requested = entry.requestedByAgentId
+        ? `, requested by ${entry.requestedByAgentId}`
+        : ''
+      const waiting =
+        entry.waitingOnTaskIds.length > 0
+          ? `, waiting on ${entry.waitingOnTaskIds.join(', ')}`
+          : ''
+      return `- [${entry.status}] ${entry.title} (owner: ${entry.assigneeAgentId ?? 'unassigned'}, priority ${entry.priority}, reviews ${entry.reviewCycles}${requested}${waiting})`
+    })
     .join('\n')
+  const todoLines =
+    todos.length > 0
+      ? todos
+          .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
+          .join('\n')
+      : '(no personal todos yet. Create a short flow with todo_write.)'
   const claimLines =
     claims.length > 0
       ? claims.map((claim) => `- ${claim.pathPrefix} (${claim.status})`).join('\n')
@@ -600,11 +622,16 @@ export function compileBuildPrompt(input: {
         'You can inspect and change the repository with these tools:',
         ...toolNames.map((name) => `- ${name}`),
         '',
-        'Every write must stay inside the active task claim. Prefer patch_file over whole-file rewrites.',
-        'Use write_file or patch_file for every change. Do not paste full source files into the chat.',
+        'Inside the repository you have full read/write/test access. Prefer edit_file or apply_patch over whole-file rewrites.',
+        'Use write_file or apply_patch for every change. Do not paste full source files into the chat.',
         'Use project-relative paths without a leading slash, for example src/app.ts not /src/app.ts.',
         'Create new files and folders inside the opened project root. Run relevant tests after changes.',
-        'Read the file before editing. Cite the paths you actually touched.'
+        'If you need another agent to build something first, call request_from_agent. That creates a high-priority task, posts a request, and puts your task in waiting mode. Do not implement their part yourself.',
+        'If a request is addressed to you in the task board or team channel, prioritize it before starting unrelated work, then notify the requester and the team.',
+        'You may ignore team messages that do not affect your part; take the channel seriously when it does.',
+        'Keep your own flow with todo_write and todo_read. Mark items in_progress and done as you move.',
+        'Read the file before editing. Cite the paths you actually touched.',
+        'Commands or files outside the project, container builds/runs, installs, downloads, and deploys require Boss approval with full details.'
       ].join('\n')
     : [
         'No repository tools are available for this turn.',
@@ -629,7 +656,7 @@ export function compileBuildPrompt(input: {
     '# AgentDesk Build meeting',
     '',
     'You are part of AgentDesk, a local multi-agent software studio. This is a Build meeting.',
-    `Current phase: ${phase}. One writer at a time. Every file change is snapshotted and auditable.`,
+    `Current phase: ${phase}. Up to ${maxConcurrentAgents} agents work in parallel. Every file change is snapshotted and auditable.`,
     '',
     '## Identity',
     `Name: ${agent.name}`,
@@ -653,6 +680,13 @@ export function compileBuildPrompt(input: {
     '',
     '## Current task',
     taskText,
+    '',
+    '## Your personal flow',
+    todoLines,
+    '',
+    '## Team channel',
+    teamChannelText.trim() ||
+      'No team messages yet. Use post_message to coordinate and request_from_agent when blocked.',
     '',
     '## Active file claims',
     claimLines,

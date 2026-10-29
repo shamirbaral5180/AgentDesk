@@ -15,22 +15,26 @@ import {
   approveMeetingPlanRecord,
   createBuildMeetingRecord,
   createMeetingRecord,
+  deleteMeetingRecord,
   getMeetingDetail,
   listMeetingSummaries,
   meetingSummary,
   releaseAllActiveClaims,
+  renameMeetingRecord,
   setMeetingStatus
 } from './meetingStore'
 import { cancelApprovalsForSession } from '../approvals/approvalService'
 import { markMeetingLeaseStopped } from '../recovery/runLeaseService'
 import {
   cancelAllMeetingRuns,
+  isMeetingActive,
   sendDirectEngine,
   startMeetingEngine,
   stopMeetingEngine
 } from './meetingEngine'
 import {
   cancelAllBuildRuns,
+  isBuildActive,
   queueBuildInterrupt,
   startBuildEngine,
   stopBuildEngine
@@ -86,6 +90,17 @@ export function listMeetings(): MeetingSummary[] {
 
 export function getMeeting(meetingId: string): MeetingDetail {
   return getMeetingDetail(meetingId)
+}
+
+export function renameMeeting(meetingId: string, title: string): MeetingSummary {
+  return renameMeetingRecord(meetingId, title)
+}
+
+export function deleteMeeting(meetingId: string): void {
+  if (isBuildActive(meetingId) || isMeetingActive(meetingId)) {
+    throw new AppError('MEETING_ACTIVE', 'Stop this run before deleting its session.')
+  }
+  deleteMeetingRecord(meetingId)
 }
 
 export function createMeeting(request: MeetingCreateRequest): MeetingDetail {

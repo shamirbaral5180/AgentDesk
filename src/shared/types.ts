@@ -1,4 +1,4 @@
-﻿export const APP_NAME = 'AgentDesk'
+export const APP_NAME = 'AgentDesk'
 export const PROJECT_DATA_DIR = '.agentdesk'
 export const APP_SCHEMA_VERSION = 1
 
@@ -51,6 +51,8 @@ export const IPC_CHANNELS = {
   memoryDelete: 'memory:delete',
   meetingList: 'meeting:list',
   meetingGet: 'meeting:get',
+  meetingRename: 'meeting:rename',
+  meetingDelete: 'meeting:delete',
   meetingCreate: 'meeting:create',
   meetingCreateBuild: 'meeting:create-build',
   meetingStart: 'meeting:start',
@@ -127,6 +129,7 @@ export type OrchestrationDefaults = {
   maxCostUsd: number
   maxToolStepsPerTurn: number
   maxReviewCycles: number
+  maxConcurrentAgents: number
 }
 
 export type ProjectPermissionDefaults = {
@@ -968,6 +971,7 @@ export type MeetingTaskStatus =
   | 'review'
   | 'changes_requested'
   | 'done'
+  | 'waiting'
   | 'blocked'
 
 export type MeetingBudget = {
@@ -979,6 +983,7 @@ export type MeetingBudget = {
   maxCostUsd: number
   maxToolStepsPerTurn: number
   maxReviewCycles: number
+  maxConcurrentAgents: number
 }
 
 export type MeetingUsage = {
@@ -1018,6 +1023,9 @@ export type MeetingMessageMetadata = {
   toolCalls?: ChatToolTrace[]
   card?: MeetingIntakeCard
   error?: string
+  requestTaskId?: string
+  requestFromAgentId?: string
+  waitingOnTaskIds?: string[]
 }
 
 export type MeetingMessage = {
@@ -1046,10 +1054,28 @@ export type MeetingTask = {
   acceptanceCriteria: string | null
   fileGlobs: string[]
   dependsOn: string[]
+  waitingOnTaskIds: string[]
+  requestedByAgentId: string | null
+  requestKind: 'plan' | 'request' | 'followup' | null
+  parentTaskId: string | null
   reviewCycles: number
   createdAt: number
   updatedAt: number
   completedAt: number | null
+}
+
+export type AgentTodoStatus = 'pending' | 'in_progress' | 'done' | 'blocked'
+
+export type AgentTodo = {
+  id: string
+  meetingId: string
+  agentId: string
+  taskId: string | null
+  content: string
+  status: AgentTodoStatus
+  position: number
+  createdAt: number
+  updatedAt: number
 }
 
 export type MeetingTaskEvent = {
@@ -1204,6 +1230,7 @@ export type MeetingDetail = {
   decisions: MeetingDecision[]
   fileClaims: MeetingFileClaim[]
   activity: MeetingTaskEvent[]
+  todos: AgentTodo[]
   plan: MeetingPlan | null
   finalReport: MeetingFinalReport | null
 }
@@ -1282,6 +1309,13 @@ export type MeetingEvent =
       type: 'report'
       meetingId: string
       report: MeetingFinalReport
+      meeting: MeetingSummary
+    }
+  | {
+      type: 'todo'
+      meetingId: string
+      agentId: string
+      todos: AgentTodo[]
       meeting: MeetingSummary
     }
   | {
@@ -1481,6 +1515,8 @@ export type AgentDeskApi = {
   deleteMemory: (id: string) => Promise<IpcResult<null>>
   listMeetings: () => Promise<IpcResult<MeetingSummary[]>>
   getMeeting: (meetingId: string) => Promise<IpcResult<MeetingDetail>>
+  renameMeeting: (meetingId: string, title: string) => Promise<IpcResult<MeetingSummary>>
+  deleteMeeting: (meetingId: string) => Promise<IpcResult<null>>
   createMeeting: (request: MeetingCreateRequest) => Promise<IpcResult<MeetingDetail>>
   createBuildMeeting: (
     request: MeetingBuildCreateRequest

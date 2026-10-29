@@ -25,7 +25,7 @@ const HIGH_RISK_PATTERNS: Array<[RegExp, string]> = [
   [/\b(cargo|go)\s+(install|get|add)\b/i, 'This command installs dependencies.'],
   [/\b(curl|wget|Invoke-WebRequest|iwr|Start-BitsTransfer)\b/i, 'This command downloads from the network.'],
   [/\b(git\s+(clone|push|pull|fetch)|gh\s+release|npm\s+publish)\b/i, 'This command interacts with a remote repository or registry.'],
-  [/\b(docker|podman)\s+(push|build|run)\b/i, 'This command builds or runs a container.'],
+  [/\b(docker|podman)(\.exe)?\b/i, 'This command uses the container engine and can build, run, pull, or change host resources.'],
   [/\b(vercel|netlify|fly|heroku|aws|gcloud|az)\s+(deploy|publish|up|push)\b/i, 'This command deploys to a remote service.'],
   [/\b(rm|rmdir|del|erase)\b.*(\/s|\/q|-rf|-r\b|--recursive)/i, 'This command can delete files recursively.'],
   [/\b(git\s+reset\s+--hard|git\s+clean\s+-[a-z]*f|git\s+checkout\s+--\s+\.)/i, 'This command discards uncommitted work.'],
